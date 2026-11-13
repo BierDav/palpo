@@ -93,6 +93,10 @@ pub async fn sync_events(
         let max_since_sn = curr_sn;
         if since_tk.stream_ordering() > max_since_sn {
             let mut response = SyncEventsResBody::new(since_str.to_owned());
+            // Missing counts look like zero to clients, causing endless key
+            // uploads and eviction of private keys still advertised by us.
+            response.device_one_time_keys_count =
+                data::user::count_one_time_keys(sender_id, device_id).await?;
             // Key uploads and claims need not allocate a stream position. Even
             // an idle incremental sync must report their current usage state.
             response.device_unused_fallback_key_types =
