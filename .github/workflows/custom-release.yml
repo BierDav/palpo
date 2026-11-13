@@ -1,0 +1,193 @@
+name: Build and release custom Palpo
+
+on:
+  push:
+    branches: [patched]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Custom release tag override (e.g. 0.5.0-custom.1)"
+        required: false
+        type: string
+
+concurrency:
+  group: custom-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      upstream_tag: ${{ steps.ver.outputs.upstream_tag }}
+      release_tag: ${{ steps.ver.outputs.release_tag }}
+      image_repo: ${{ steps.ver.outputs.image_repo }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner_lc="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          echo "image_repo=ghcr.io/${owner_lc}/palpo" >> "$GITHUB_OUTPUT"
+
+          upstream_tag="$(tr -d '[:space:]' < .custom-upstream-tag)"
+          echo "upstream_tag=${upstream_tag}" >> "$GITHUB_OUTPUT"
+
+          if [[ -n "${{ inputs.release_tag }}" ]]; then
+            release_tag="${{ inputs.release_tag }}"
+          else
+            base_ver="${upstream_tag#v}"
+            max_n=0
+            while IFS= read -r tag; do
+              n="${tag##*-custom.}"
+              if [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_n )); then
+                max_n="$n"
+              fi
+            done < <(git tag -l "${base_ver}-custom.*")
+            release_tag="${base_ver}-custom.$((max_n + 1))"
+          fi
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    name: Build & test (${{ matrix.suffix }})
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runs_on: ubuntu-24.04
+            suffix: amd64
+          - platform: linux/arm64
+            runs_on: ubuntu-24.04-arm
+            suffix: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build native image for testing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.custom
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: local-palpo:${{ matrix.suffix }}
+          cache-from: type=gha,scope=palpo-${{ matrix.suffix }}
+          cache-to: type=gha,mode=max,scope=palpo-${{ matrix.suffix }}
+
+      - name: Verify idle sync key counts & active-room incremental sync
+        run: python3 tests/custom_idle_sync.py "local-palpo:${{ matrix.suffix }}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image by digest
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.custom
+          platforms: ${{ matrix.platform }}
+          tags: ${{ needs.prepare.outputs.image_repo }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=palpo-${{ matrix.suffix }}
+
+      - name: Export digest
+        run: |
+          mkdir -p "${{ runner.temp }}/digests"
+          digest="${{ steps.push.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.suffix }}
+          path: "${{ runner.temp }}/digests/*"
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download digest artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: "${{ runner.temp }}/digests"
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push multi-arch manifest list
+        id: manifest
+        env:
+          IMAGE_REPO: ${{ needs.prepare.outputs.image_repo }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          short_sha="$(printf '%s' "${GITHUB_SHA}" | cut -c1-12)"
+          refs=()
+          for f in "${{ runner.temp }}/digests/"*; do
+            d="$(basename "$f")"
+            refs+=("${IMAGE_REPO}@sha256:${d}")
+          done
+          docker buildx imagetools create \
+            -t "${IMAGE_REPO}:${RELEASE_TAG}" \
+            -t "${IMAGE_REPO}:sha-${short_sha}" \
+            -t "${IMAGE_REPO}:latest" \
+            "${refs[@]}"
+          digest="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "${IMAGE_REPO}:${RELEASE_TAG}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Create git tag and GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_REPO: ${{ needs.prepare.outputs.image_repo }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          UPSTREAM_TAG: ${{ needs.prepare.outputs.upstream_tag }}
+          MANIFEST_DIGEST: ${{ steps.manifest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git rev-parse -q --verify "refs/tags/${RELEASE_TAG}" >/dev/null; then
+            git tag "${RELEASE_TAG}" "${GITHUB_SHA}"
+            git push origin "refs/tags/${RELEASE_TAG}"
+          fi
+          if ! gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            commits="$(git log --oneline "${UPSTREAM_TAG}..${GITHUB_SHA}" || true)"
+            notes="$(printf 'Custom multi-arch build based on upstream `%s`.\n\n**Image**\n```text\n%s:%s@%s\n```\n\n**Custom commits on top of `%s`**\n```\n%s\n```\n' \
+              "${UPSTREAM_TAG}" "${IMAGE_REPO}" "${RELEASE_TAG}" "${MANIFEST_DIGEST}" "${UPSTREAM_TAG}" "${commits}")"
+            gh release create "${RELEASE_TAG}" \
+              --target "${GITHUB_SHA}" \
+              --title "${RELEASE_TAG}" \
+              --notes "${notes}"
+          fi

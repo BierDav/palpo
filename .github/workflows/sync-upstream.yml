@@ -1,0 +1,90 @@
+name: Sync upstream Palpo stable releases
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-upstream-palpo
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check latest upstream stable release and rebase patches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          latest_tag="$(gh api repos/palpo-im/palpo/releases/latest --jq '.tag_name')"
+          current_tag="$(tr -d '[:space:]' < .custom-upstream-tag)"
+          echo "Current upstream base: ${current_tag}; latest upstream release: ${latest_tag}"
+
+          if [[ "${latest_tag}" == "${current_tag}" ]]; then
+            echo "Already up to date."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream https://github.com/palpo-im/palpo.git 2>/dev/null || true
+          git fetch upstream "refs/tags/${current_tag}:refs/tags/${current_tag}" "refs/tags/${latest_tag}:refs/tags/${latest_tag}"
+
+          # Replay only patch commits between current_tag and the tip CI commit (HEAD~1).
+          git checkout -B patched-next "${latest_tag}"
+          if [[ -n "$(git rev-list "${current_tag}..origin/patched~1")" ]]; then
+            if ! git cherry-pick --empty=drop "${current_tag}..origin/patched~1"; then
+              status="$(git status --short || true)"
+              git cherry-pick --abort || true
+              title="Upstream sync conflict for ${latest_tag}"
+              existing="$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
+              body="$(printf 'Automatic rebase of custom Palpo patches from `%s` onto upstream `%s` hit a merge conflict.\n\n```\n%s\n```\n' "${current_tag}" "${latest_tag}" "${status}")"
+              if [[ -n "${existing}" ]]; then
+                gh issue comment "${existing}" --body "${body}"
+              else
+                gh issue create --title "${title}" --body "${body}"
+              fi
+              exit 1
+            fi
+          fi
+
+          # Restore CI/Dockerfile/test files from the previous tip commit and bump base tag.
+          git checkout origin/patched -- \
+            Dockerfile.custom \
+            tests/custom_idle_sync.py \
+            .github/workflows/custom-release.yml \
+            .github/workflows/sync-upstream.yml
+          printf '%s\n' "${latest_tag}" > .custom-upstream-tag
+          git add \
+            .custom-upstream-tag \
+            Dockerfile.custom \
+            tests/custom_idle_sync.py \
+            .github/workflows/custom-release.yml \
+            .github/workflows/sync-upstream.yml
+          git commit -m "ci: rebase custom build onto ${latest_tag}"
+
+          base_ver="${latest_tag#v}"
+          max_n=0
+          while IFS= read -r tag; do
+            n="${tag##*-custom.}"
+            if [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_n )); then
+              max_n="$n"
+            fi
+          done < <(git tag -l "${base_ver}-custom.*")
+          release_tag="${base_ver}-custom.$((max_n + 1))"
+
+          git push origin "refs/tags/${latest_tag}"
+          git push origin HEAD:patched --force-with-lease
+          gh workflow run custom-release.yml --ref patched -f "release_tag=${release_tag}"

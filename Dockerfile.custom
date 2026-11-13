@@ -1,0 +1,35 @@
+# Custom multi-arch Palpo build for quickme.at (patched branch).
+FROM rust:1-bookworm AS builder
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      libclang-dev libpq-dev cmake ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work
+COPY Cargo.toml Cargo.lock ./
+COPY crates crates
+
+ENV CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+RUN --mount=type=cache,target=/work/target \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git/db \
+    cargo build --locked --release -p palpo && cp target/release/palpo /work/palpo
+
+FROM debian:bookworm-slim
+
+LABEL org.opencontainers.image.source="https://github.com/BierDav/palpo"
+LABEL org.opencontainers.image.description="Palpo Matrix homeserver with idle sync OTK count and active-room incremental sync fixes"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl libpq5 && rm -rf /var/lib/apt/lists/* && \
+    groupadd -r palpo && useradd -r -g palpo palpo && \
+    mkdir -p /var/palpo/media /var/palpo/certs /var/palpo/acme && \
+    chown -R palpo:palpo /var/palpo
+
+WORKDIR /var/palpo
+COPY --from=builder /work/palpo /var/palpo/palpo
+ENV PALPO_CONFIG=/var/palpo/palpo.toml
+EXPOSE 8008
+USER palpo
+CMD ["/var/palpo/palpo"]
