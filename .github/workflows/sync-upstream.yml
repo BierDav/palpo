@@ -39,22 +39,29 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git remote add upstream https://github.com/palpo-im/palpo.git 2>/dev/null || true
-          git fetch upstream "refs/tags/${current_tag}:refs/tags/${current_tag}" "refs/tags/${latest_tag}:refs/tags/${latest_tag}"
+          git fetch https://github.com/palpo-im/palpo.git \
+            "refs/tags/${current_tag}:refs/tags/${current_tag}" \
+            "refs/tags/${latest_tag}:refs/tags/${latest_tag}"
 
-          # Replay only patch commits between current_tag and the tip CI commit (HEAD~1).
+          # Replay only patch commits (excluding CI/custom build files).
           git checkout -B patched-next "${latest_tag}"
-          if [[ -n "$(git rev-list "${current_tag}..origin/patched~1")" ]]; then
-            if ! git cherry-pick --empty=drop "${current_tag}..origin/patched~1"; then
+          patches="$(git rev-list --reverse "${current_tag}..origin/patched" -- . \
+            ':!.custom-upstream-tag' \
+            ':!Dockerfile.custom' \
+            ':!tests/custom_idle_sync.py' \
+            ':!.github/workflows/custom-release.yml' \
+            ':!.github/workflows/sync-upstream.yml')"
+          if [[ -n "${patches}" ]]; then
+            if ! git cherry-pick --empty=drop ${patches}; then
               status="$(git status --short || true)"
               git cherry-pick --abort || true
               title="Upstream sync conflict for ${latest_tag}"
-              existing="$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
+              existing="$(gh issue list -R "${GITHUB_REPOSITORY}" --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
               body="$(printf 'Automatic rebase of custom Palpo patches from `%s` onto upstream `%s` hit a merge conflict.\n\n```\n%s\n```\n' "${current_tag}" "${latest_tag}" "${status}")"
               if [[ -n "${existing}" ]]; then
-                gh issue comment "${existing}" --body "${body}"
+                gh issue comment -R "${GITHUB_REPOSITORY}" "${existing}" --body "${body}"
               else
-                gh issue create --title "${title}" --body "${body}"
+                gh issue create -R "${GITHUB_REPOSITORY}" --title "${title}" --body "${body}"
               fi
               exit 1
             fi
@@ -87,4 +94,4 @@ jobs:
 
           git push origin "refs/tags/${latest_tag}"
           git push origin HEAD:patched --force-with-lease
-          gh workflow run custom-release.yml --ref patched -f "release_tag=${release_tag}"
+          gh workflow run -R "${GITHUB_REPOSITORY}" custom-release.yml --ref patched -f "release_tag=${release_tag}"
