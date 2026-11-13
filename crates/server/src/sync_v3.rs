@@ -162,7 +162,20 @@ pub async fn sync_events(
     );
 
     let all_joined_rooms = data::user::joined_rooms(sender_id).await?;
-    for room_id in &all_joined_rooms {
+    let sync_joined_rooms = if !full_state {
+        if let Some(since_tk) = since_tk {
+            if since_tk.stream_ordering() > 0 && !all_joined_rooms.is_empty() {
+                active_joined_rooms(sender_id, since_tk.event_sn(), curr_sn).await?
+            } else {
+                all_joined_rooms.clone()
+            }
+        } else {
+            all_joined_rooms.clone()
+        }
+    } else {
+        all_joined_rooms.clone()
+    };
+    for room_id in &sync_joined_rooms {
         let (joined_room, _) = load_joined_room(
             sender_id,
             device_id,
@@ -1057,6 +1070,52 @@ async fn load_joined_room(
         unread_count,
     };
     Ok((joined_room, timeline.next_batch))
+}
+
+async fn active_joined_rooms(
+    sender_id: &UserId,
+    since_sn: Seqnum,
+    until_sn: Seqnum,
+) -> AppResult<Vec<OwnedRoomId>> {
+    use diesel_async::RunQueryDsl;
+    #[derive(diesel::QueryableByName)]
+    struct ActiveRoomRow {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        room_id: String,
+    }
+    let rows = diesel::sql_query(
+        "WITH joined AS (
+            SELECT room_id FROM (
+                SELECT DISTINCT ON (room_id) room_id, membership FROM room_users
+                WHERE user_id = $1 ORDER BY room_id, id DESC
+            ) AS memberships WHERE membership = 'join'
+        )
+        SELECT room_id FROM event_points WHERE room_id IN (SELECT room_id FROM joined) AND live_published_sn >= $2 AND live_published_sn <= $3
+        UNION
+        SELECT room_id FROM e2e_key_changes WHERE room_id IN (SELECT room_id FROM joined) AND occur_sn >= $2 AND occur_sn <= $3
+        UNION
+        SELECT room_id FROM room_typings WHERE room_id IN (SELECT room_id FROM joined) AND occur_sn >= $2
+        UNION
+        SELECT room_id FROM event_receipts WHERE room_id IN (SELECT room_id FROM joined) AND sn >= $2
+        UNION
+        SELECT room_id FROM event_receipts WHERE user_id = $1 AND room_id IN (SELECT room_id FROM joined) AND event_sn >= $2
+        UNION
+        SELECT room_id FROM user_datas WHERE user_id = $1 AND room_id IN (SELECT room_id FROM joined) AND occur_sn >= $2
+        UNION
+        SELECT room_id FROM event_stickies WHERE room_id IN (SELECT room_id FROM joined)",
+    )
+    .bind::<diesel::sql_types::Text, _>(sender_id.as_str())
+    .bind::<diesel::sql_types::BigInt, _>(since_sn)
+    .bind::<diesel::sql_types::BigInt, _>(until_sn)
+    .load::<ActiveRoomRow>(&mut connect().await?)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            OwnedRoomId::try_from(row.room_id)
+                .map_err(|_| AppError::public("invalid RoomId in active sync query"))
+        })
+        .collect()
 }
 
 /// Event identity is assigned before an outlier may reach the live timeline.
