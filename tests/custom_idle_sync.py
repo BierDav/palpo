@@ -65,7 +65,8 @@ VALUES ('@fixture:fixture.test', 'FIXTURE', 'fixture-access', 0),
             args += ["-X", method]
         if body is not None:
             args += ["-H", "Content-Type: application/json", "--data", json.dumps(body)]
-        return json.loads(docker(*args, "http://localhost:8008/_matrix/client/v3/" + path))
+        endpoint = path if path.startswith("/") else "/_matrix/client/v3/" + path
+        return json.loads(docker(*args, "http://localhost:8008" + endpoint))
 
     uploaded = request("keys/upload", {"one_time_keys": {"signed_curve25519:once": "b25jZQ"}})
     assert uploaded["one_time_key_counts"]["signed_curve25519"] == 1, uploaded
@@ -112,7 +113,33 @@ VALUES ('@fixture:fixture.test', 'FIXTURE', 'fixture-access', 0),
     assert target_room in joined, room_sync
     event_ids = [e["event_id"] for e in joined[target_room]["timeline"]["events"]]
     assert sent["event_id"] in event_ids, joined[target_room]
-    print("PASS: repeated idle syncs report current key counts and active-room incremental sync delivers to_device and room events")
+    # Element X keeps a separate roomless encryption connection. A real account
+    # with hundreds of rooms must not scan every room's state before delivering
+    # its next SAS key, even though e2ee is enabled on that connection.
+    for _ in range(390):
+        rooms.append(request("createRoom", {})["room_id"])
+    sliding_path = "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync"
+    encryption_body = {"conn_id": "encryption", "extensions": {
+        "e2ee": {"enabled": True}, "to_device": {"enabled": True},
+    }}
+    initial = request(sliding_path + "?timeout=0", encryption_body)
+    next_device = initial["extensions"]["to_device"]["next_batch"]
+    encryption_body["extensions"]["to_device"]["since"] = next_device
+    # Publish a device change without changing the room's state frame.
+    docker("exec", "-i", database, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "palpo",
+           data="INSERT INTO e2e_key_changes(user_id,room_id,occur_sn,changed_at) VALUES "
+                "('@other:fixture.test', '" + rooms[0] + "', nextval('occur_sn_seq'), 0);")
+    request("sendToDevice/m.key.verification.key/sas-many-rooms", {
+        "messages": {"@fixture:fixture.test": {"FIXTURE": {"transaction_id": "sas-many-rooms", "key": "c2Fz"}}},
+    }, method="PUT")
+    started = time.monotonic()
+    response = request(sliding_path + "?timeout=0&pos=" + initial["pos"], encryption_body)
+    elapsed = time.monotonic() - started
+    assert elapsed < 1, f"405-room encryption sync took {elapsed:.3f}s"
+    assert any(event["type"] == "m.key.verification.key"
+               for event in response["extensions"]["to_device"]["events"]), response
+    assert "@other:fixture.test" in response["extensions"]["e2ee"]["device_lists"]["changed"], response
+    print(f"PASS: idle key counts, incremental events, and 405-room encryption sync ({elapsed:.3f}s)")
 except Exception:
     subprocess.run(["docker", "logs", server, "--tail", "60"])
     raise

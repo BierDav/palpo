@@ -1655,6 +1655,49 @@ async fn collect_account_data(
     Ok(account_data)
 }
 
+#[derive(diesel::QueryableByName)]
+struct E2eeRoomStateChange {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    room_id: String,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    current_frame_id: i64,
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::BigInt>)]
+    since_frame_id: Option<i64>,
+}
+
+async fn e2ee_room_state_changes(
+    sender_id: &UserId,
+    joined_rooms: &[&RoomId],
+    since_sn: Seqnum,
+) -> AppResult<Vec<E2eeRoomStateChange>> {
+    let room_ids: Vec<&str> = joined_rooms.iter().map(|room| room.as_str()).collect();
+    // Key changes are already fetched across all joined rooms in one query.
+    // State needs comparison only when its frame changed, or the sender joined
+    // at/after the token (including a join exactly at the inclusive boundary).
+    // Keeping this selection in PostgreSQL avoids thousands of sequential
+    // round trips on the SDK's otherwise roomless encryption connection.
+    Ok(diesel::sql_query(
+        "SELECT r.id AS room_id, r.state_frame_id AS current_frame_id,
+                previous.frame_id AS since_frame_id
+         FROM rooms r
+         LEFT JOIN LATERAL (
+             SELECT p.frame_id FROM event_points p
+             WHERE p.room_id = r.id AND p.event_sn <= $3 AND p.frame_id IS NOT NULL
+             ORDER BY p.event_sn DESC LIMIT 1
+         ) previous ON TRUE
+         WHERE r.id = ANY($1) AND r.state_frame_id IS NOT NULL
+           AND (r.state_frame_id IS DISTINCT FROM previous.frame_id OR EXISTS (
+               SELECT 1 FROM room_users m WHERE m.room_id = r.id AND m.user_id = $2
+               AND m.membership = 'join' AND m.event_sn >= $3
+           ))",
+    )
+    .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(&room_ids)
+    .bind::<diesel::sql_types::Text, _>(sender_id.as_str())
+    .bind::<diesel::sql_types::BigInt, _>(since_sn)
+    .load::<E2eeRoomStateChange>(&mut connect().await?)
+    .await?)
+}
+
 async fn collect_e2ee(
     SyncInfo {
         sender_id,
@@ -1675,26 +1718,21 @@ async fn collect_e2ee(
     device_list_changes
         .extend(data::user::keys_changed_users(sender_id, since_sn, Some(until_sn)).await?);
 
-    for room_id in all_joined_rooms {
-        let Ok(current_frame_id) = crate::room::get_frame_id(room_id, None).await else {
-            error!("Room {room_id} has no state");
+    for change in e2ee_room_state_changes(sender_id, all_joined_rooms, since_sn).await? {
+        let Some(since_frame_id) = change.since_frame_id else {
+            // As before, no membership/state diff can be made without a prior frame.
             continue;
         };
-        let since_frame_id = crate::event::get_last_frame_id(room_id, Some(since_sn))
-            .await
-            .ok();
+        let room_id = RoomId::parse(&change.room_id)?;
+        let room_id = &*room_id;
+        let current_frame_id = change.current_frame_id;
 
         let encrypted_room =
             state::get_state(current_frame_id, &StateEventType::RoomEncryption, "")
                 .await
                 .is_ok();
 
-        if let Some(since_frame_id) = since_frame_id {
-            // // Skip if there are only timeline changes
-            // if since_frame_id == current_frame_id {
-            //     continue;
-            // }
-
+        {
             let since_encryption =
                 state::get_state(since_frame_id, &StateEventType::RoomEncryption, "")
                     .await
@@ -1764,9 +1802,8 @@ async fn collect_e2ee(
                 }
             }
         }
-        // Look for device list updates in this room
-        device_list_changes
-            .extend(crate::room::keys_changed_users(room_id, since_sn, Some(until_sn)).await?);
+        // The account-wide query above includes this room's key changes too,
+        // even when its state frame did not change.
     }
 
     for user_id in left_encrypted_users {
@@ -2242,6 +2279,75 @@ mod tests {
     #[cfg(feature = "unstable-msc4262")]
     use crate::core::identifiers::UserId;
     use crate::core::identifiers::{OwnedRoomId, RoomId};
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_e2ee_many_unchanged_rooms_still_deliver_key_changes() {
+        use super::*;
+        crate::test_database::init();
+        let user: OwnedUserId = "@e2ee_many:example.org".try_into().unwrap();
+        let peer: OwnedUserId = "@e2ee_peer:example.org".try_into().unwrap();
+        let device: &DeviceId = "E2EE_MANY".into();
+        // These frames deliberately have no state layers. An unchanged room
+        // must not attempt to expand them just to deliver unrelated inbox keys.
+        for sql in [
+            "INSERT INTO rooms(id,version,state_frame_id,created_at) SELECT '!e2ee_many_'||n||':example.org','11',900001,0 FROM generate_series(0,404) n",
+            "INSERT INTO room_users(event_id,event_sn,room_id,user_id,user_server_id,sender_id,membership,created_at) SELECT '$e2ee_many_'||n,10,'!e2ee_many_'||n||':example.org','@e2ee_many:example.org','example.org','@e2ee_many:example.org','join',0 FROM generate_series(0,404) n",
+            "INSERT INTO event_points(event_id,event_sn,room_id,frame_id) SELECT '$e2ee_many_'||n,10,'!e2ee_many_'||n||':example.org',900001 FROM generate_series(0,404) n",
+            "INSERT INTO e2e_key_changes(user_id,room_id,occur_sn,changed_at) VALUES ('@e2ee_peer:example.org','!e2ee_many_0:example.org',150,0),('@unrelated:example.org','!outside:example.org',150,0),('@too_late:example.org','!e2ee_many_0:example.org',201,0)",
+        ] {
+            diesel::sql_query(sql)
+                .execute(&mut connect().await.unwrap())
+                .await
+                .unwrap();
+        }
+        let joined = data::user::joined_rooms(&user).await.unwrap();
+        let joined: Vec<&RoomId> = joined.iter().map(AsRef::as_ref).collect();
+        assert_eq!(joined.len(), 405);
+        assert!(
+            e2ee_room_state_changes(&user, &joined, 100)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let body: SyncEventsReqBody = serde_json::from_value(serde_json::json!({
+            "extensions": {"e2ee": {"enabled": true}, "to_device": {"enabled": true}}
+        }))
+        .unwrap();
+        let e2ee = collect_e2ee(
+            SyncInfo {
+                sender_id: &user,
+                device_id: device,
+                since_sn: 100,
+                req_body: &body,
+            },
+            &joined,
+            200,
+        )
+        .await
+        .unwrap();
+        assert_eq!(e2ee.device_lists.changed, vec![peer]);
+
+        // A changed frame and a join exactly at the token must still enter the
+        // existing state-diff logic; skipping either could hide device changes.
+        diesel::sql_query(
+            "UPDATE rooms SET state_frame_id=900002 WHERE id='!e2ee_many_0:example.org'",
+        )
+        .execute(&mut connect().await.unwrap())
+        .await
+        .unwrap();
+        diesel::sql_query("UPDATE room_users SET event_sn=100 WHERE room_id='!e2ee_many_1:example.org' AND user_id='@e2ee_many:example.org'")
+            .execute(&mut connect().await.unwrap()).await.unwrap();
+        let changes = e2ee_room_state_changes(&user, &joined, 100).await.unwrap();
+        let ids: BTreeSet<_> = changes
+            .iter()
+            .map(|change| change.room_id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            BTreeSet::from(["!e2ee_many_0:example.org", "!e2ee_many_1:example.org"])
+        );
+    }
 
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
