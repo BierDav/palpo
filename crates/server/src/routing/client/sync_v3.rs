@@ -61,10 +61,10 @@ pub(super) async fn sync_events_v3(
         args.set_presence.as_str(),
     )
     .await?;
-    let watch_baseline = if args.timeout.unwrap_or(Duration::ZERO).is_zero() {
+    let watcher = if args.timeout.unwrap_or(Duration::ZERO).is_zero() {
         None
     } else {
-        Some(crate::watcher::load_watch_snapshot(sender_id, device_id, false).await?)
+        Some(crate::watcher::Watcher::new(sender_id, device_id, false).await?)
     };
     let mut body = crate::sync_v3::sync_events(sender_id, device_id, &args).await?;
 
@@ -79,9 +79,9 @@ pub(super) async fn sync_events_v3(
         let max_wait = Duration::from_secs(30);
         let duration = std::cmp::min(args.timeout.unwrap_or(Duration::ZERO), max_wait);
         // Setup watchers, so if there's no response, we can wait for them
-        if let Some(watch_baseline) = watch_baseline {
+        if let Some(watcher) = watcher {
             let watcher =
-                crate::watcher::watch_from(sender_id, device_id, false, None, watch_baseline);
+                watcher.watch(sender_id, device_id, false, None);
             // Elapsing is the normal end of a long-poll; a watcher failure is not.
             if let Ok(result) = tokio::time::timeout(duration, watcher).await {
                 result?;

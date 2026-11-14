@@ -25,6 +25,7 @@ pub mod room;
 pub mod schema;
 pub mod sending;
 pub mod telemetry;
+pub mod sync_watch;
 pub mod user;
 
 mod error;

@@ -722,6 +722,7 @@ pub async fn add_to_device_event(
         })
         .await?;
 
+    crate::sync_watch::notify();
     Ok(())
 }
 

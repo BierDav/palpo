@@ -84,10 +84,10 @@ pub(super) async fn sync_events_v5(
     let profile_updates = req_body.extensions.profiles.enabled.unwrap_or(false);
     #[cfg(not(feature = "unstable-msc4262"))]
     let profile_updates = false;
-    let watch_baseline = if long_poll_timeout(args.timeout).is_zero() {
+    let watcher = if long_poll_timeout(args.timeout).is_zero() {
         None
     } else {
-        Some(crate::watcher::load_watch_snapshot(sender_id, device_id, profile_updates).await?)
+        Some(crate::watcher::Watcher::new(sender_id, device_id, profile_updates).await?)
     };
 
     let mut res_body = crate::sync_v5::sync_events_for_request(
@@ -117,14 +117,8 @@ pub(super) async fn sync_events_v5(
             .map(|pos| pos.event_sn);
         #[cfg(not(feature = "unstable-msc4262"))]
         let profile_after_sn = None;
-        if let Some(watch_baseline) = watch_baseline {
-            let watcher = crate::watcher::watch_from(
-                sender_id,
-                device_id,
-                profile_updates,
-                profile_after_sn,
-                watch_baseline,
-            );
+        if let Some(watcher) = watcher {
+            let watcher = watcher.watch(sender_id, device_id, profile_updates, profile_after_sn);
             // Elapsing is the normal end of a long-poll; a watcher failure is not.
             if let Ok(result) = tokio::time::timeout(duration, watcher).await {
                 result?;

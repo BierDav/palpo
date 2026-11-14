@@ -105,8 +105,8 @@ fn profile_change_is_ready(
     profile_updates && profile_after_sn.is_some_and(|after_sn| latest_change_sn >= after_sn)
 }
 
-/// The baseline must be captured before reading the response, so a write during
-/// response construction cannot disappear into a newly registered watch.
+/// Watch from an already captured baseline (used by stream regressions).
+#[cfg(test)]
 pub(crate) async fn watch_from(
     user_id: &UserId,
     device_id: &DeviceId,
@@ -114,20 +114,58 @@ pub(crate) async fn watch_from(
     profile_after_sn: Option<Seqnum>,
     baseline: WatchSnapshot,
 ) -> AppResult<()> {
-    if profile_change_is_ready(profile_updates, profile_after_sn, baseline.profile_sn) {
-        return Ok(());
+    Watcher { baseline, updates: crate::data::sync_watch::subscribe() }
+        .watch(user_id, device_id, profile_updates, profile_after_sn).await
+}
+
+/// Capture before building the first sync response, so a write between that
+/// response and the long poll cannot become an unnoticed part of the baseline.
+pub struct Watcher {
+    baseline: WatchSnapshot,
+    updates: tokio::sync::watch::Receiver<()>,
+}
+
+impl Watcher {
+    pub async fn new(
+        user_id: &UserId,
+        device_id: &DeviceId,
+        profile_updates: bool,
+    ) -> AppResult<Self> {
+        // Subscribe before reading: notifications during the query stay pending.
+        let updates = crate::data::sync_watch::subscribe();
+        let baseline = load_watch_snapshot(user_id, device_id, profile_updates).await?;
+        Ok(Self { baseline, updates })
     }
-    tokio::select! {
-        _ = crate::ROTATE.watch() => Ok(()),
-        result = async {
-            for _ in 0..10 {
-                if load_watch_snapshot(user_id, device_id, profile_updates).await?.has_updates_since(&baseline) {
-                    return Ok(());
+
+    pub async fn watch(
+        mut self,
+        user_id: &UserId,
+        device_id: &DeviceId,
+        profile_updates: bool,
+        profile_after_sn: Option<Seqnum>,
+    ) -> AppResult<()> {
+        if profile_change_is_ready(profile_updates, profile_after_sn, self.baseline.profile_sn) {
+            return Ok(());
+        }
+        tokio::select! {
+            _ = crate::ROTATE.watch() => Ok(()),
+            result = async {
+                // The first tick rechecks writes made while the response was built.
+                // Subsequent ticks cover other processes and streams without local signals.
+                let mut fallback = tokio::time::interval(Duration::from_secs(3));
+                fallback.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        _ = self.updates.changed() => {},
+                        _ = fallback.tick() => {},
+                    }
+                    if load_watch_snapshot(user_id, device_id, profile_updates).await?.has_updates_since(&self.baseline) {
+                        return Ok(());
+                    }
                 }
-                tokio::time::sleep(Duration::from_secs(3)).await;
-            }
-            Ok(())
-        } => result,
+            } => result,
+            _ = tokio::time::sleep(Duration::from_secs(30)) => Ok(()),
+        }
     }
 }
 
@@ -148,6 +186,102 @@ mod tests {
 #[cfg(test)]
 mod database_tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_watch_wakes_for_committed_writes_and_response_races() {
+        crate::test_database::init();
+        let user: OwnedUserId = "@watch_notify:example.org".try_into().unwrap();
+        let device: &DeviceId = "NOTIFY".into();
+        let watcher = Watcher::new(&user, device, false).await.unwrap();
+        // Model a key committed after the first response was built but before watch().
+        crate::data::user::device::add_to_device_event(
+            &user,
+            &user,
+            device,
+            "m.key.verification.key",
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            watcher.watch(&user, device, false, None),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let watcher = Watcher::new(&user, device, false).await.unwrap();
+        let waiting = watcher.watch(&user, device, false, None);
+        tokio::pin!(waiting);
+        // Let the immediate fallback tick finish; the next tick is three seconds away.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut waiting)
+                .await
+                .is_err()
+        );
+        // Client sendToDevice uses the batch/idempotency transaction path.
+        crate::data::room::transaction_id::commit_to_device_transaction(
+            &crate::data::room::NewDbEventIdempotent {
+                txn_id: "watch_sas_mac".into(),
+                user_id: user.clone(),
+                device_id: Some("DESKTOP".into()),
+                room_id: None,
+                event_id: None,
+                created_at: crate::core::UnixMillis::now(),
+                endpoint: "sendToDevice/m.key.verification.mac".into(),
+            },
+            &[crate::data::user::device::NewDbDeviceInbox {
+                user_id: user.clone(),
+                device_id: device.to_owned(),
+                json_data: serde_json::json!({"type": "m.key.verification.mac", "sender": user, "content": {}}),
+                created_at: 0,
+            }],
+            &[],
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), &mut waiting)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_watch_wakes_for_typing_start_and_stop() {
+        crate::test_database::init();
+        let user: OwnedUserId = "@watch_typing:example.org".try_into().unwrap();
+        let peer: OwnedUserId = "@watch_typist:example.org".try_into().unwrap();
+        let room: OwnedRoomId = "!watch_typing:example.org".try_into().unwrap();
+        let device: &DeviceId = "TYPING".into();
+        diesel::sql_query("INSERT INTO room_users (event_id,event_sn,room_id,user_id,user_server_id,sender_id,membership,created_at) VALUES ('$watch-typing-member',1,'!watch_typing:example.org','@watch_typing:example.org','example.org','@watch_typing:example.org','join',0)")
+            .execute(&mut crate::data::db()).await.unwrap();
+        for typing in [true, false] {
+            let watcher = Watcher::new(&user, device, false).await.unwrap();
+            let waiting = watcher.watch(&user, device, false, None);
+            tokio::pin!(waiting);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), &mut waiting)
+                    .await
+                    .is_err()
+            );
+            if typing {
+                crate::data::room::typing::upsert_typing(&room, &peer, 999999)
+                    .await
+                    .unwrap();
+            } else {
+                crate::data::room::typing::stop_typing(&room, &peer, 1)
+                    .await
+                    .unwrap();
+            }
+            tokio::time::timeout(Duration::from_secs(1), &mut waiting)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
 
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]

@@ -605,6 +605,7 @@ async fn append_pdu_fenced(
             Ok(())
         })
         .await?;
+    data::sync_watch::notify();
 
     for prev_id in &pdu.prev_events {
         let new_edge = NewDbEventEdge {
@@ -736,6 +737,14 @@ async fn append_pdu_fenced(
 
     let all_appservices = crate::appservice::all().await?;
     for appservice in all_appservices.values() {
+        if !appservice
+            .registration
+            .url
+            .as_deref()
+            .is_some_and(|url| !url.trim().is_empty())
+        {
+            continue;
+        }
         if super::appservice_in_room(&pdu.room_id, appservice).await? {
             crate::sending::send_pdu_appservice(appservice.registration.id.clone(), &pdu.event_id)
                 .await?;

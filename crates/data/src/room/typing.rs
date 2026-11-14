@@ -35,7 +35,7 @@ pub async fn upsert_typing(
     user_id: &UserId,
     timeout_at: i64,
 ) -> DataResult<Seqnum> {
-    crate::connect()
+    let sn = crate::connect()
         .transaction::<_, crate::DataError, _>(async |conn| {
             lock_typing_stream(conn).await?;
             diesel::insert_into(room_typings::table)
@@ -58,7 +58,9 @@ pub async fn upsert_typing(
                 .await
                 .map_err(Into::into)
         })
-        .await
+        .await?;
+    crate::sync_watch::notify();
+    Ok(sn)
 }
 
 /// A row whose stop has been published stores `timeout_at` as the negated
@@ -92,7 +94,9 @@ pub async fn stop_typing(room_id: &RoomId, user_id: &UserId, now_ms: i64) -> Dat
             .await?;
             Ok(())
         })
-        .await
+        .await?;
+    crate::sync_watch::notify();
+    Ok(())
 }
 
 /// How long an expired or stopped typing row is kept. Deleting it at once
