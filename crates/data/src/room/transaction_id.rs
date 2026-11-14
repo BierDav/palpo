@@ -160,7 +160,7 @@ pub async fn commit_to_device_transaction(
     inboxes: &[crate::user::device::NewDbDeviceInbox],
     outgoing: &[crate::sending::NewDbOutgoingRequest],
 ) -> DataResult<bool> {
-    connect()
+    let committed = connect()
         .await?
         .transaction::<_, crate::DataError, _>(async |conn| {
             let inserted = diesel::insert_into(event_idempotents::table)
@@ -202,7 +202,11 @@ pub async fn commit_to_device_transaction(
             }
             Ok(true)
         })
-        .await
+        .await?;
+    if committed && !inboxes.is_empty() {
+        crate::sync_watch::notify();
+    }
+    Ok(committed)
 }
 
 /// Recover a published local event after a crash between timeline publication

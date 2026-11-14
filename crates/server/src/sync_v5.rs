@@ -666,6 +666,16 @@ async fn sync_events_at_position(
     let invite_snapshot =
         crate::membership::invited_rooms_for_sync(sender_id, 0, device_id, curr_sn).await?;
     let next_batch = curr_sn + 1;
+    let to_device = collect_to_device(
+        SyncInfo {
+            sender_id,
+            device_id,
+            since_sn,
+            req_body,
+        },
+        next_batch,
+    )
+    .await?;
 
     let all_joined_rooms = data::user::joined_rooms(sender_id).await?;
     let ignored_users = crate::user::ignored_users(sender_id).await;
@@ -824,6 +834,7 @@ async fn sync_events_at_position(
         let profiles_owe_snapshot = false;
 
         if !profiles_owe_snapshot && !invites_owe_delivery && !lists_owe_update {
+            res.extensions.to_device = to_device;
             return Ok(res);
         }
     }
@@ -844,7 +855,7 @@ async fn sync_events_at_position(
         extensions: Extensions {
             account_data: collect_account_data(sync_info).await?,
             e2ee: collect_e2ee(sync_info, &all_joined_rooms, curr_sn).await?,
-            to_device: collect_to_device(sync_info, next_batch).await,
+            to_device,
             receipts: collect_receipts(sync_info),
             typing: collect_typing(sync_info, next_batch, all_rooms.iter().cloned()).await?,
             #[cfg(feature = "unstable-msc4262")]
@@ -1786,28 +1797,35 @@ async fn collect_to_device(
     SyncInfo {
         sender_id,
         device_id,
-        since_sn,
         req_body,
+        ..
     }: SyncInfo<'_>,
     next_batch: Seqnum,
-) -> Option<sync_events::v5::ToDevice> {
+) -> AppResult<Option<sync_events::v5::ToDevice>> {
     if !req_body.extensions.to_device.enabled.unwrap_or(false) {
-        return None;
+        return Ok(None);
     }
 
-    data::user::device::remove_to_device_events(sender_id, device_id, since_sn - 1)
-        .await
-        .ok()?;
+    // Only the extension's token acknowledges these messages. The global pos
+    // can advance independently, including when this extension was disabled.
+    if let Some(since) = &req_body.extensions.to_device.since {
+        let since = since
+            .parse::<Seqnum>()
+            .ok()
+            .filter(|sn| *sn >= 0 && *sn <= next_batch)
+            .ok_or_else(|| crate::MatrixError::invalid_param("invalid to-device since token"))?;
+        data::user::device::remove_to_device_events(sender_id, device_id, since.saturating_sub(1))
+            .await?;
+    }
 
     let events =
         data::user::device::get_to_device_events(sender_id, device_id, None, Some(next_batch))
-            .await
-            .ok()?;
+            .await?;
 
-    Some(sync_events::v5::ToDevice {
+    Ok(Some(sync_events::v5::ToDevice {
         next_batch: next_batch.to_string(),
         events,
-    })
+    }))
 }
 
 fn collect_receipts(SyncInfo { req_body, .. }: SyncInfo<'_>) -> sync_events::v5::Receipts {
@@ -2224,6 +2242,89 @@ mod tests {
     #[cfg(feature = "unstable-msc4262")]
     use crate::core::identifiers::UserId;
     use crate::core::identifiers::{OwnedRoomId, RoomId};
+
+    #[tokio::test]
+    #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
+    async fn database_idle_sync_delivers_and_independently_acknowledges_to_device() {
+        use super::*;
+        use serde_json::json;
+
+        crate::test_database::init();
+        crate::config::CONFIG.get_or_init(|| {
+            serde_json::from_value(json!({
+                "server_name": "dynamic.example", "db": {"url": "unused-test-config"}
+            }))
+            .unwrap()
+        });
+        let user: OwnedUserId = "@sas_idle:dynamic.example".try_into().unwrap();
+        let device: OwnedDeviceId = "SAS_PHONE".into();
+        let mut body: SyncEventsReqBody = serde_json::from_value(json!({
+            "extensions": {"to_device": {"enabled": true}}
+        }))
+        .unwrap();
+        data::user::device::add_to_device_event(
+            &user,
+            &user,
+            &device,
+            "m.key.verification.key",
+            json!({"key": "first"}),
+        )
+        .await
+        .unwrap();
+        let idle = data::curr_sn().await.unwrap() + 1;
+        let first = sync_events(&user, &device, idle, &body, &KnownRooms::new())
+            .await
+            .unwrap();
+        assert!(!first.is_empty_for_long_poll());
+        let first = first.extensions.to_device.unwrap();
+        assert_eq!(first.events.len(), 1);
+
+        // The old extension token removes only the first key, preserving a new one
+        // at the exclusive boundary even though the global position includes both.
+        data::user::device::add_to_device_event(
+            &user,
+            &user,
+            &device,
+            "m.key.verification.mac",
+            json!({"mac": {}}),
+        )
+        .await
+        .unwrap();
+        // Advancing the global position alone must replay both unacknowledged messages.
+        let idle = data::curr_sn().await.unwrap() + 1;
+        let retry = sync_events(&user, &device, idle, &body, &KnownRooms::new())
+            .await
+            .unwrap();
+        assert_eq!(retry.extensions.to_device.unwrap().events.len(), 2);
+        body.extensions.to_device.since = Some(first.next_batch);
+        let idle = data::curr_sn().await.unwrap() + 1;
+        let second = sync_events(&user, &device, idle, &body, &KnownRooms::new())
+            .await
+            .unwrap();
+        let second = second.extensions.to_device.unwrap();
+        assert_eq!(second.events.len(), 1);
+        let event = serde_json::to_value(&second.events[0]).unwrap();
+        assert_eq!(event["type"], "m.key.verification.mac");
+        body.extensions.to_device.since = Some(second.next_batch);
+        let acked = sync_events(&user, &device, idle, &body, &KnownRooms::new())
+            .await
+            .unwrap();
+        assert!(acked.is_empty_for_long_poll());
+        assert!(acked.extensions.to_device.unwrap().events.is_empty());
+
+        for invalid in [
+            "invalid".to_owned(),
+            "-1".to_owned(),
+            (idle + 1).to_string(),
+        ] {
+            body.extensions.to_device.since = Some(invalid);
+            assert!(
+                sync_events(&user, &device, idle, &body, &KnownRooms::new())
+                    .await
+                    .is_err()
+            );
+        }
+    }
 
     fn rid(s: &str) -> OwnedRoomId {
         RoomId::parse(s).unwrap().to_owned()

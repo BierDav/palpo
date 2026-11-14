@@ -28,6 +28,7 @@ pub async fn upsert_typing(
         ))
         .execute(&mut connect().await?)
         .await?;
+    crate::sync_watch::notify();
     Ok(())
 }
 
@@ -51,6 +52,7 @@ pub async fn stop_typing(
     ))
     .execute(&mut connect().await?)
     .await?;
+    crate::sync_watch::notify();
     Ok(())
 }
 
