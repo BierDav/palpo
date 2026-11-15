@@ -71,3 +71,25 @@ binary unchanged for the run. This regression covers Matrix membership and sync.
 message writes against a disposable Palpo server and PostgreSQL. See
 [the performance guide](../docs/development/performance-load-testing.md) for
 fixture preparation, before/after runs, telemetry and measurement limits.
+
+## Invite acceptance sync
+
+`custom_idle_sync.py` runs disposable Docker/PostgreSQL fixtures on both custom
+release architectures. It checks classic invite-to-join delivery with zero,
+message-only and truncated timelines, the state before historical events,
+sliding required-state-only delivery after a nonzero invite cursor, idle room
+suppression, and the existing 405-room encryption latency check.
+
+The equivalent HTTP regressions can run without Docker using local PostgreSQL.
+Run each test alone, with a different **empty dedicated** database URL (the test
+refuses an existing schema), adding `--all-features` to cover optional features:
+
+```sh
+PALPO_TEST_DATABASE_URL=postgresql://localhost/empty_classic_fixture \
+  cargo test -p palpo --lib http_classic_invite_join -- --ignored
+PALPO_TEST_DATABASE_URL=postgresql://localhost/empty_sliding_fixture \
+  cargo test -p palpo --lib http_sliding_invite_join -- --ignored
+```
+
+These provision only fixture accounts under `invite-join.test` and never connect
+to an existing homeserver.

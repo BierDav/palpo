@@ -775,6 +775,8 @@ async fn load_joined_room_with_frames(
     )?;
     let (heroes, joined_member_count, invited_member_count, joined_since_last_sync, state_events) =
         if !full_state
+            && !initial_sync
+            && !joined_since_incremental
             && timeline.events.is_empty()
             && (since_frame_id == Some(current_frame_id) || since_frame_id.is_none())
         {
@@ -807,12 +809,37 @@ async fn load_joined_room_with_frames(
                 // Probably since = 0, we will do an initial sync
                 let (joined_member_count, invited_member_count, heroes) =
                     calculate_counts().await?;
-                let current_state_ids = state::get_full_state_ids(if full_state {
+                // This state is applied before the returned timeline, not at
+                // the old sync cursor. A filtered/truncated timeline can start
+                // after our join, and an empty timeline needs the captured end
+                // state. Conversely, history before the join must not see
+                // future membership or other state changes ahead of time.
+                let state_frame_id = if full_state {
                     current_frame_id
+                } else if let Some((_, first)) = timeline.events.first() {
+                    match state::get_pdu_before_frame_id(&first.event_id).await {
+                        Ok(frame) => frame,
+                        // Legacy non-state frames are also their before-state.
+                        Err(error) if error.is_not_found() && first.state_key.is_none() => {
+                            state::get_pdu_frame_id(&first.event_id).await?
+                        }
+                        Err(error) if error.is_not_found() => {
+                            // Own membership remains visible for legacy state
+                            // events without a before-frame. Use the captured
+                            // publication boundary, never their mutable frame.
+                            let Some(position) =
+                                timeline::publication::position(room_id, first.event_sn).await?
+                            else {
+                                return Err(error);
+                            };
+                            captured_sync_frame(room_id, position.saturating_sub(1)).await?
+                        }
+                        Err(error) => return Err(error),
+                    }
                 } else {
-                    since_frame_id.unwrap_or(current_frame_id)
-                })
-                .await?;
+                    current_frame_id
+                };
+                let current_state_ids = state::get_full_state_ids(state_frame_id).await?;
                 let mut state_events = Vec::new();
                 let mut lazy_loaded = HashSet::new();
 
@@ -1751,6 +1778,10 @@ async fn load_room_heroes(sender_id: &UserId, room_id: &RoomId) -> AppResult<Vec
     .await?;
     Ok(rows.into_iter().map(|row| row.user_id).collect())
 }
+
+#[cfg(test)]
+#[path = "sync_v3/invite_join_tests.rs"]
+mod invite_join_tests;
 
 #[cfg(test)]
 #[path = "sync_v3/member_presence_tests.rs"]

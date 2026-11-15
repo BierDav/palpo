@@ -85,7 +85,7 @@ jobs:
           cache-from: type=gha,scope=palpo-${{ matrix.suffix }}
           cache-to: type=gha,mode=max,scope=palpo-${{ matrix.suffix }}
 
-      - name: Verify idle sync key counts & active-room incremental sync
+      - name: Verify invite acceptance, required state, idle keys & incremental sync
         run: python3 tests/custom_idle_sync.py "local-palpo:${{ matrix.suffix }}"
 
       - name: Log in to GHCR
