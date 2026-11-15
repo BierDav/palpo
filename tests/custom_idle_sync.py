@@ -113,6 +113,89 @@ VALUES ('@fixture:fixture.test', 'FIXTURE', 'fixture-access', 0),
     assert target_room in joined, room_sync
     event_ids = [e["event_id"] for e in joined[target_room]["timeline"]["events"]]
     assert sent["event_id"] in event_ids, joined[target_room]
+    # Invite acceptance must reach Element even when no join event survives
+    # timeline filtering. All users and rooms here belong to this disposable DB.
+    def own_membership(events):
+        return [event["content"]["membership"] for event in events
+                if event["type"] == "m.room.member"
+                and event.get("state_key") == "@fixture:fixture.test"]
+
+    def classic_room(room, since=None, timeline=None):
+        room_filter = urllib.parse.quote(json.dumps({"room": {
+            "rooms": [room], "timeline": timeline or {"limit": 0},
+            "state": {"lazy_load_members": True},
+        }}), safe="")
+        path = "sync?timeout=0&filter=" + room_filter
+        if since is not None:
+            path += "&since=" + since
+        return request(path)
+
+    def invited_room():
+        room = request("createRoom", {"name": "before"}, token="other-access")["room_id"]
+        request(f"rooms/{room}/invite", {"user_id": "@fixture:fixture.test"}, token="other-access")
+        return room
+
+    for timeline_filter in [{"limit": 0}, {"limit": 10, "types": ["m.room.message"]}, {"limit": 1}]:
+        room = invited_room()
+        invited = classic_room(room)
+        assert room in invited["rooms"]["invite"], invited
+        request(f"join/{room}", {})
+        request(f"rooms/{room}/send/m.room.message/after-join",
+                {"msgtype": "m.text", "body": "after join"}, method="PUT")
+        synced = classic_room(room, invited["next_batch"], timeline_filter)
+        joined = synced["rooms"]["join"][room]
+        assert own_membership(joined["state"]["events"]) == ["join"], (timeline_filter, synced)
+        events = joined.get("timeline", {}).get("events", [])
+        assert len(events) == (0 if timeline_filter["limit"] == 0 else 1), synced
+        assert all(event["type"] == "m.room.message" for event in events), synced
+        initial = classic_room(room)
+        assert own_membership(initial["rooms"]["join"][room]["state"]["events"]) == ["join"], initial
+        request(f"rooms/{room}/leave", {})
+
+    # Preserve state before historical timeline events: applying end state here
+    # would put a future name and own join ahead of the pre-join message.
+    room = invited_room()
+    request(f"rooms/{room}/send/m.room.message/before-join",
+            {"msgtype": "m.text", "body": "before join"}, method="PUT", token="other-access")
+    request(f"join/{room}", {})
+    request(f"rooms/{room}/state/m.room.name", {"name": "after"}, method="PUT", token="other-access")
+    synced = classic_room(room, timeline={"limit": 3})
+    joined = synced["rooms"]["join"][room]
+    assert joined["timeline"]["events"][0]["content"]["body"] == "before join", synced
+    assert own_membership(joined["state"]["events"]) == ["invite"], synced
+    assert own_membership(joined["timeline"]["events"]) == ["join"], synced
+    assert [event["content"]["name"] for event in joined["state"]["events"]
+            if event["type"] == "m.room.name"] == ["before"], synced
+    request(f"rooms/{room}/leave", {})
+
+    sliding_path = "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync"
+    room = invited_room()
+    subscription = {"conn_id": "invite-join", "room_subscriptions": {room: {
+        "timeline_limit": 0, "required_state": [["m.room.member", "$ME"], ["m.room.name", ""]],
+    }}}
+    invited = request(sliding_path + "?timeout=0", subscription)
+    assert invited["rooms"][room]["invite_state"], invited
+    # An idle fast-path poll would leave room_since_sn at zero, masking the
+    # incremental bug. Unrelated traffic forces the second invite poll through.
+    request(f"rooms/{other_room}/send/m.room.message/advance-invite",
+            {"msgtype": "m.text", "body": "advance"}, method="PUT", token="other-access")
+    invited = request(sliding_path + "?timeout=0&pos=" + invited["pos"], subscription)
+    request(f"join/{room}", {})
+    joined = request(sliding_path + "?timeout=0&pos=" + invited["pos"], subscription)
+    assert own_membership(joined["rooms"][room]["required_state"]) == ["join"], joined
+    assert not joined["rooms"][room].get("timeline"), joined
+    assert "invite_state" not in joined["rooms"][room], joined
+    request(f"rooms/{room}/state/m.room.name", {"name": "required state only"},
+            method="PUT", token="other-access")
+    changed = request(sliding_path + "?timeout=0&pos=" + joined["pos"], subscription)
+    assert any(event["content"].get("name") == "required state only"
+               for event in changed["rooms"][room]["required_state"]), changed
+    request(f"rooms/{other_room}/send/m.room.message/advance-idle",
+            {"msgtype": "m.text", "body": "advance"}, method="PUT", token="other-access")
+    idle = request(sliding_path + "?timeout=0&pos=" + changed["pos"], subscription)
+    assert room not in idle.get("rooms", {}), idle
+    request(f"rooms/{room}/leave", {})
+
     # Element X keeps a separate roomless encryption connection. A real account
     # with hundreds of rooms must not scan every room's state before delivering
     # its next SAS key, even though e2ee is enabled on that connection.
@@ -139,7 +222,7 @@ VALUES ('@fixture:fixture.test', 'FIXTURE', 'fixture-access', 0),
     assert any(event["type"] == "m.key.verification.key"
                for event in response["extensions"]["to_device"]["events"]), response
     assert "@other:fixture.test" in response["extensions"]["e2ee"]["device_lists"]["changed"], response
-    print(f"PASS: idle key counts, incremental events, and 405-room encryption sync ({elapsed:.3f}s)")
+    print(f"PASS: invite/join boundaries, required-state-only sync, idle key counts, incremental events, and 405-room encryption sync ({elapsed:.3f}s)")
 except Exception:
     subprocess.run(["docker", "logs", server, "--tail", "60"])
     raise

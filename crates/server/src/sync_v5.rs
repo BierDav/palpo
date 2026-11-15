@@ -1356,14 +1356,6 @@ async fn process_rooms(
             0
         };
 
-        if room_since_sn != &0
-            && timeline.events.is_empty()
-            && invite_state.is_none()
-            && receipt_size == 0
-        {
-            continue;
-        }
-
         let prev_batch = IndexMap::first(&timeline.events).and_then(|(sn, _)| {
             if *sn == 0 {
                 None
@@ -1511,6 +1503,19 @@ async fn process_rooms(
         }
 
         let required_state = required_state_events;
+
+        // Required state can change without a returned timeline event (notably
+        // invite -> join with timeline_limit=0). Collect/deduplicate it before
+        // suppressing idle rooms. Roomless encryption connections still never
+        // enter this loop or expand any room state.
+        if !is_initial
+            && timeline.events.is_empty()
+            && required_state.is_empty()
+            && invite_state.is_none()
+            && receipt_size == 0
+        {
+            continue;
+        }
 
         // Heroes - only compute when requested or when room name isn't set
         let room_name = room::get_name(room_id).await.ok();
