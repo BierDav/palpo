@@ -65,7 +65,8 @@ VALUES ('@fixture:fixture.test', 'FIXTURE', 'fixture-access', 0),
             args += ["-X", method]
         if body is not None:
             args += ["-H", "Content-Type: application/json", "--data", json.dumps(body)]
-        return json.loads(docker(*args, "http://localhost:8008/_matrix/client/v3/" + path))
+        endpoint = path if path.startswith("/") else "/_matrix/client/v3/" + path
+        return json.loads(docker(*args, "http://localhost:8008" + endpoint))
 
     uploaded = request("keys/upload", {"one_time_keys": {"signed_curve25519:once": "b25jZQ"}})
     assert uploaded["one_time_key_counts"]["signed_curve25519"] == 1, uploaded
