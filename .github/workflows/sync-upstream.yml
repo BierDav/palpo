@@ -1,4 +1,4 @@
-name: Sync upstream Palpo stable releases
+name: Sync upstream Palpo main
 
 on:
   schedule:
@@ -11,7 +11,6 @@ concurrency:
 
 permissions:
   contents: write
-  issues: write
   actions: write
 
 jobs:
@@ -22,16 +21,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check latest upstream stable release and rebase patches
+      - name: Check upstream main and rebase custom patches
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           latest_tag="$(gh api repos/palpo-im/palpo/releases/latest --jq '.tag_name')"
-          current_tag="$(tr -d '[:space:]' < .custom-upstream-tag)"
-          echo "Current upstream base: ${current_tag}; latest upstream release: ${latest_tag}"
+          current_revision="$(tr -d '[:space:]' < .custom-upstream-revision)"
+          git fetch origin patched
+          git fetch https://github.com/palpo-im/palpo.git main
+          latest_revision="$(git rev-parse FETCH_HEAD)"
+          echo "Current upstream base: ${current_revision}; upstream main: ${latest_revision}"
 
-          if [[ "${latest_tag}" == "${current_tag}" ]]; then
+          if [[ "${latest_revision}" == "${current_revision}" ]]; then
             echo "Already up to date."
             exit 0
           fi
@@ -39,14 +41,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git fetch https://github.com/palpo-im/palpo.git \
-            "refs/tags/${current_tag}:refs/tags/${current_tag}" \
-            "refs/tags/${latest_tag}:refs/tags/${latest_tag}"
+          git fetch https://github.com/palpo-im/palpo.git "refs/tags/${latest_tag}:refs/tags/${latest_tag}"
 
           # Replay only patch commits (excluding CI/custom build files).
-          git checkout -B patched-next "${latest_tag}"
-          patches="$(git rev-list --reverse "${current_tag}..origin/patched" -- . \
+          git checkout -B patched-next "${latest_revision}"
+          patches="$(git rev-list --reverse "${current_revision}..origin/patched" -- . \
             ':!.custom-upstream-tag' \
+            ':!.custom-upstream-revision' \
             ':!Dockerfile.custom' \
             ':!tests/custom_idle_sync.py' \
             ':!.github/workflows/custom-release.yml' \
@@ -55,14 +56,13 @@ jobs:
             if ! git cherry-pick --empty=drop ${patches}; then
               status="$(git status --short || true)"
               git cherry-pick --abort || true
-              title="Upstream sync conflict for ${latest_tag}"
-              existing="$(gh issue list -R "${GITHUB_REPOSITORY}" --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
-              body="$(printf 'Automatic rebase of custom Palpo patches from `%s` onto upstream `%s` hit a merge conflict.\n\n```\n%s\n```\n' "${current_tag}" "${latest_tag}" "${status}")"
-              if [[ -n "${existing}" ]]; then
-                gh issue comment -R "${GITHUB_REPOSITORY}" "${existing}" --body "${body}"
-              else
-                gh issue create -R "${GITHUB_REPOSITORY}" --title "${title}" --body "${body}"
-              fi
+              {
+                echo "## Upstream sync conflict"
+                echo "Replaying custom patches from ${current_revision} onto ${latest_revision} failed."
+                echo '```'
+                echo "${status}"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
           fi
@@ -74,13 +74,15 @@ jobs:
             .github/workflows/custom-release.yml \
             .github/workflows/sync-upstream.yml
           printf '%s\n' "${latest_tag}" > .custom-upstream-tag
+          printf '%s\n' "${latest_revision}" > .custom-upstream-revision
           git add \
             .custom-upstream-tag \
+            .custom-upstream-revision \
             Dockerfile.custom \
             tests/custom_idle_sync.py \
             .github/workflows/custom-release.yml \
             .github/workflows/sync-upstream.yml
-          git commit -m "ci: rebase custom build onto ${latest_tag}"
+          git commit -m "ci: rebase custom build onto upstream ${latest_revision}"
 
           base_ver="${latest_tag#v}"
           max_n=0

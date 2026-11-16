@@ -23,6 +23,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       upstream_tag: ${{ steps.ver.outputs.upstream_tag }}
+      upstream_revision: ${{ steps.ver.outputs.upstream_revision }}
       release_tag: ${{ steps.ver.outputs.release_tag }}
       image_repo: ${{ steps.ver.outputs.image_repo }}
     steps:
@@ -38,6 +39,7 @@ jobs:
 
           upstream_tag="$(tr -d '[:space:]' < .custom-upstream-tag)"
           echo "upstream_tag=${upstream_tag}" >> "$GITHUB_OUTPUT"
+          echo "upstream_revision=$(tr -d '[:space:]' < .custom-upstream-revision)" >> "$GITHUB_OUTPUT"
 
           if [[ -n "${{ inputs.release_tag }}" ]]; then
             release_tag="${{ inputs.release_tag }}"
@@ -85,7 +87,7 @@ jobs:
           cache-from: type=gha,scope=palpo-${{ matrix.suffix }}
           cache-to: type=gha,mode=max,scope=palpo-${{ matrix.suffix }}
 
-      - name: Verify invite acceptance, required state, idle keys & incremental sync
+      - name: Verify room tags, read counts, invite state and encryption sync
         run: python3 tests/custom_idle_sync.py "local-palpo:${{ matrix.suffix }}"
 
       - name: Log in to GHCR
@@ -173,6 +175,7 @@ jobs:
           IMAGE_REPO: ${{ needs.prepare.outputs.image_repo }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           UPSTREAM_TAG: ${{ needs.prepare.outputs.upstream_tag }}
+          UPSTREAM_REVISION: ${{ needs.prepare.outputs.upstream_revision }}
           MANIFEST_DIGEST: ${{ steps.manifest.outputs.digest }}
         run: |
           set -euo pipefail
@@ -183,9 +186,9 @@ jobs:
             git push origin "refs/tags/${RELEASE_TAG}"
           fi
           if ! gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            commits="$(git log --oneline "${UPSTREAM_TAG}..${GITHUB_SHA}" || true)"
-            notes="$(printf 'Custom multi-arch build based on upstream `%s`.\n\n**Image**\n```text\n%s:%s@%s\n```\n\n**Custom commits on top of `%s`**\n```\n%s\n```\n' \
-              "${UPSTREAM_TAG}" "${IMAGE_REPO}" "${RELEASE_TAG}" "${MANIFEST_DIGEST}" "${UPSTREAM_TAG}" "${commits}")"
+            commits="$(git log --oneline "${UPSTREAM_REVISION}..${GITHUB_SHA}" || true)"
+            notes="$(printf 'Custom multi-arch build based on upstream main `%s` (release version `%s`).\n\n**Image**\n```text\n%s:%s@%s\n```\n\n**Custom commits on top of `%s`**\n```\n%s\n```\n' \
+              "${UPSTREAM_REVISION}" "${UPSTREAM_TAG}" "${IMAGE_REPO}" "${RELEASE_TAG}" "${MANIFEST_DIGEST}" "${UPSTREAM_REVISION}" "${commits}")"
             gh release create "${RELEASE_TAG}" \
               --target "${GITHUB_SHA}" \
               --title "${RELEASE_TAG}" \
