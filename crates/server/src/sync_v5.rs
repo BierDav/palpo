@@ -1876,24 +1876,18 @@ async fn process_rooms(
                 .insert(key, pdu.event_sn);
             required_state.push(pdu.to_sync_state_event_for(sender_id, Some(device_id)));
         }
-        if *room_since_sn != 0
-            && timeline.events.is_empty()
-            && invite_state.is_none()
-            && receipt_size == 0
-            && required_state.is_empty()
-        {
-            continue;
-        }
-
         // Required state can change without a returned timeline event (notably
         // invite -> join with timeline_limit=0). Collect/deduplicate it before
         // suppressing idle rooms. Roomless encryption connections still never
         // enter this loop or expand any room state.
+        let read_counts_changed = !is_initial
+            && room::user::last_read_notification(sender_id, room_id).await? >= *room_since_sn;
         if !is_initial
             && timeline.events.is_empty()
             && required_state.is_empty()
             && invite_state.is_none()
             && receipt_size == 0
+            && !read_counts_changed
         {
             continue;
         }
@@ -2681,8 +2675,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires an empty dedicated PALPO_TEST_DATABASE_URL"]
     async fn database_idle_sync_delivers_and_independently_acknowledges_to_device() {
-        use super::*;
         use serde_json::json;
+
+        use super::*;
 
         crate::test_database::init();
         crate::config::CONFIG.get_or_init(|| {

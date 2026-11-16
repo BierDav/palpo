@@ -114,8 +114,12 @@ pub(crate) async fn watch_from(
     profile_after_sn: Option<Seqnum>,
     baseline: WatchSnapshot,
 ) -> AppResult<()> {
-    Watcher { baseline, updates: crate::data::sync_watch::subscribe() }
-        .watch(user_id, device_id, profile_updates, profile_after_sn).await
+    Watcher {
+        baseline,
+        updates: crate::data::sync_watch::subscribe(),
+    }
+    .watch(user_id, device_id, profile_updates, profile_after_sn)
+    .await
 }
 
 /// Capture before building the first sync response, so a write between that

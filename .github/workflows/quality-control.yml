@@ -190,6 +190,10 @@ jobs:
           # Configuration and pools are process-global. Give each exact case
           # its own process and empty database in both supported feature modes.
           cases=(
+            routing::client::user::room_preferences_tests::http_room_tags_use_standard_routes_bodies_and_sync_echoes
+            routing::client::user::room_preferences_tests::http_reading_old_events_clears_counts_without_new_timeline_events
+            sync_v3::invite_join_tests::http_classic_invite_join_at_returned_timeline_boundary
+            sync_v3::invite_join_tests::http_sliding_invite_join_and_required_state_without_timeline
             sync_v3::resource_review_tests::review_sync_batches_frames_and_skips_empty_event_sections
             room::auth_chain::federation_access_tests::review_federation_event_reads_bind_rooms_before_auth_cache
             sync_v3::account_data_publication_tests::review_account_data_publication_fences_sync_and_releases_failures

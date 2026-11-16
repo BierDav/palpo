@@ -112,6 +112,35 @@ VALUES ('@fixture:fixture.test', 'FIXTURE', 'fixture-access', 0),
     assert target_room in joined, room_sync
     event_ids = [e["event_id"] for e in joined[target_room]["timeline"]["events"]]
     assert sent["event_id"] in event_ids, joined[target_room]
+    # Favorites and low priority use the standard user-scoped routes and a
+    # flat TagInfo body. Their account-data echo must survive incremental sync.
+    tags_path = f"user/%40fixture%3Afixture.test/rooms/{target_room}/tags"
+    tag_since = request("sync?timeout=0")["next_batch"]
+    request(tags_path + "/m.favourite", {"order": 0.25}, method="PUT")
+    request(tags_path + "/m.lowpriority", {}, method="PUT")
+    expected_tags = {"m.favourite": {"order": 0.25}, "m.lowpriority": {}}
+    assert request(tags_path)["tags"] == expected_tags
+    tagged = request("sync?timeout=0&since=" + tag_since)
+    echoed = tagged["rooms"]["join"][target_room]["account_data"]["events"]
+    assert any(e["type"] == "m.tag" and e["content"]["tags"] == expected_tags for e in echoed), tagged
+    for tag in expected_tags:
+        request(tags_path + "/" + tag, method="DELETE")
+    assert request(tags_path)["tags"] == {}
+
+    # A receipt for an older message must publish cleared counters even when
+    # no new room event arrives. The peer also gives the E2EE probe below a
+    # genuinely shared room, as required by upstream's visibility checks.
+    request(f"rooms/{target_room}/invite", {"user_id": "@other:fixture.test"})
+    request(f"join/{target_room}", {}, token="other-access")
+    for i, receipt_type in enumerate(["m.read", "m.read.private"]):
+        message = request(f"rooms/{target_room}/send/m.room.message/unread-{i}",
+                          {"msgtype": "m.text", "body": "unread fixture"}, method="PUT", token="other-access")
+        before = request("sync?timeout=0")
+        assert before["rooms"]["join"][target_room]["unread_notifications"]["notification_count"] == 1, before
+        request(f"rooms/{target_room}/receipt/{receipt_type}/{message['event_id']}", {})
+        cleared = request("sync?timeout=0&since=" + before["next_batch"])
+        assert cleared["rooms"]["join"][target_room]["unread_notifications"]["notification_count"] == 0, cleared
+
     # Invite acceptance must reach Element even when no join event survives
     # timeline filtering. All users and rooms here belong to this disposable DB.
     def own_membership(events):

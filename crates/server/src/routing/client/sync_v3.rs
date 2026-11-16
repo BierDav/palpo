@@ -80,8 +80,7 @@ pub(super) async fn sync_events_v3(
         let duration = std::cmp::min(args.timeout.unwrap_or(Duration::ZERO), max_wait);
         // Setup watchers, so if there's no response, we can wait for them
         if let Some(watcher) = watcher {
-            let watcher =
-                watcher.watch(sender_id, device_id, false, None);
+            let watcher = watcher.watch(sender_id, device_id, false, None);
             // Elapsing is the normal end of a long-poll; a watcher failure is not.
             if let Ok(result) = tokio::time::timeout(duration, watcher).await {
                 result?;

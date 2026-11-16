@@ -115,5 +115,6 @@ pub struct OperateTagReqArgs {
 #[derive(ToSchema, Deserialize, Debug)]
 pub struct UpsertTagReqBody {
     /// Info about the tag.
+    #[serde(flatten)]
     pub tag_info: TagInfo,
 }

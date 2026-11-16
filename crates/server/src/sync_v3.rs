@@ -235,7 +235,13 @@ pub async fn sync_events(
     let sync_joined_rooms = if !full_state {
         if let Some(since_tk) = since_tk {
             if since_tk.stream_ordering() > 0 && !all_joined_rooms.is_empty() {
-                active_joined_rooms(sender_id, since_tk.event_sn(), curr_sn).await?
+                active_joined_rooms(
+                    sender_id,
+                    since_tk.event_sn(),
+                    curr_sn,
+                    !room_section_is_empty(&filter.room.ephemeral),
+                )
+                .await?
             } else {
                 all_joined_rooms.clone()
             }
@@ -759,7 +765,9 @@ async fn load_joined_room_with_frames(
         BatchToken::new_live(join_sn)
     };
 
-    let send_notification_counts = !timeline.events.is_empty()
+    let send_notification_counts = initial_sync
+        || full_state
+        || !timeline.events.is_empty()
         || room::user::last_read_notification(sender_id, room_id).await? >= since_tk.event_sn();
     let mut timeline_users = HashSet::new();
     let mut timeline_pdu_ids = HashSet::new();
@@ -1181,6 +1189,7 @@ async fn active_joined_rooms(
     sender_id: &UserId,
     since_sn: Seqnum,
     until_sn: Seqnum,
+    include_ephemeral: bool,
 ) -> AppResult<Vec<OwnedRoomId>> {
     use horme::RunQueryDsl;
     #[derive(diesel::QueryableByName)]
@@ -1188,7 +1197,12 @@ async fn active_joined_rooms(
         #[diesel(sql_type = diesel::sql_types::Text)]
         room_id: String,
     }
-    let rows = diesel::sql_query(
+    let typing = if include_ephemeral {
+        "UNION SELECT room_id FROM room_typings WHERE room_id IN (SELECT room_id FROM joined) AND occur_sn >= $2"
+    } else {
+        ""
+    };
+    let rows = diesel::sql_query(format!(
         "WITH joined AS (
             SELECT room_id FROM (
                 SELECT DISTINCT ON (room_id) room_id, membership FROM room_users
@@ -1198,8 +1212,7 @@ async fn active_joined_rooms(
         SELECT room_id FROM event_points WHERE room_id IN (SELECT room_id FROM joined) AND live_published_sn >= $2 AND live_published_sn <= $3
         UNION
         SELECT room_id FROM e2e_key_changes WHERE room_id IN (SELECT room_id FROM joined) AND occur_sn >= $2 AND occur_sn <= $3
-        UNION
-        SELECT room_id FROM room_typings WHERE room_id IN (SELECT room_id FROM joined) AND occur_sn >= $2
+        {typing}
         UNION
         SELECT room_id FROM event_receipts WHERE room_id IN (SELECT room_id FROM joined) AND sn >= $2
         UNION
@@ -1208,7 +1221,7 @@ async fn active_joined_rooms(
         SELECT room_id FROM user_datas WHERE user_id = $1 AND room_id IN (SELECT room_id FROM joined) AND occur_sn >= $2
         UNION
         SELECT room_id FROM event_stickies WHERE room_id IN (SELECT room_id FROM joined)",
-    )
+    ))
     .bind::<diesel::sql_types::Text, _>(sender_id.as_str())
     .bind::<diesel::sql_types::BigInt, _>(since_sn)
     .bind::<diesel::sql_types::BigInt, _>(until_sn)

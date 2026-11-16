@@ -5,9 +5,9 @@ use crate::core::client::tag::{OperateTagReqArgs, TagsResBody, UpsertTagReqBody}
 use crate::core::events::RoomAccountDataEventType;
 use crate::core::events::tag::TagEventContent;
 use crate::core::user::UserRoomReqArgs;
-use crate::{AuthArgs, DepotExt, EmptyResult, JsonResult, data, empty_ok, json_ok};
+use crate::{AuthArgs, DepotExt, EmptyResult, JsonResult, MatrixError, data, empty_ok, json_ok};
 
-/// #GET /_matrix/client/r0/user/{user_id}/rooms/{room_idd}/tags
+/// #GET /_matrix/client/r0/user/{user_id}/rooms/{room_id}/tags
 /// Returns tags on the room.
 ///
 /// - Gets the tag event of the room account data.
@@ -18,6 +18,9 @@ pub(super) async fn list_tags(
     depot: &mut Depot,
 ) -> JsonResult<TagsResBody> {
     let authed = depot.authed_info()?;
+    if authed.user_id() != &args.user_id {
+        return Err(MatrixError::forbidden("Cannot access another user's room tags.", None).into());
+    }
 
     let user_data_content = data::user::get_data::<TagEventContent>(
         authed.user_id(),
@@ -44,6 +47,9 @@ pub(super) async fn upsert_tag(
     depot: &mut Depot,
 ) -> EmptyResult {
     let authed = depot.authed_info()?;
+    if authed.user_id() != &args.user_id {
+        return Err(MatrixError::forbidden("Cannot access another user's room tags.", None).into());
+    }
 
     let mut user_data_content = data::user::get_data::<TagEventContent>(
         authed.user_id(),
@@ -78,6 +84,9 @@ pub(super) async fn delete_tag(
     depot: &mut Depot,
 ) -> EmptyResult {
     let authed = depot.authed_info()?;
+    if authed.user_id() != &args.user_id {
+        return Err(MatrixError::forbidden("Cannot access another user's room tags.", None).into());
+    }
 
     let mut user_data_content = crate::data::user::get_data::<TagEventContent>(
         authed.user_id(),

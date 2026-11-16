@@ -2,6 +2,7 @@ mod account;
 mod filter;
 mod openid;
 mod room;
+mod tag;
 
 use salvo::prelude::*;
 
@@ -29,6 +30,15 @@ pub fn authed_router() -> Router {
                         .put(account::set_global_data),
                 )
                 .push(
+                    Router::with_path("rooms/{room_id}/tags")
+                        .get(tag::list_tags)
+                        .push(
+                            Router::with_path("{tag}")
+                                .put(tag::upsert_tag)
+                                .delete(tag::delete_tag),
+                        ),
+                )
+                .push(
                     Router::with_path("rooms/{room_id}/account_data/{event_type}")
                         .get(account::get_room_data)
                         .put(account::set_room_data),
@@ -49,3 +59,6 @@ pub(super) fn current_unstable_router() -> Router {
         .hoop(hoops::limit_rate)
         .get(room::get_mutual_rooms_unstable)
 }
+
+#[cfg(test)]
+mod room_preferences_tests;

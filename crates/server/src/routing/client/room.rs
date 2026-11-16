@@ -6,7 +6,6 @@ mod relation;
 mod space;
 mod state;
 pub mod summary;
-mod tag;
 mod thread;
 use std::cmp::max;
 use std::collections::BTreeMap;
@@ -127,13 +126,6 @@ pub fn authed_router() -> Router {
                     )
                     .push(Router::with_path("report/{event_id}").post(state::report))
                     .push(Router::with_path("redact/{event_id}/{txn_id}").put(event::send_redact))
-                    .push(
-                        Router::with_path("tags").get(tag::list_tags).push(
-                            Router::with_path("{tag}")
-                                .put(tag::upsert_tag)
-                                .delete(tag::delete_tag),
-                        ),
-                    )
                     .push(
                         Router::with_path("event").push(
                             Router::with_path("{event_id}")
