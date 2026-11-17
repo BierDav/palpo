@@ -21,8 +21,9 @@ On 2026-11-16 the fork moved to upstream
   the position of the old message it reads. Sliding sync delivers the new
   counts even when receipts are disabled and there are no timeline changes.
 
-The scheduled upstream sync records each new base revision and replays only
-the remaining custom commits. Conflicts stop the workflow with a job summary;
+The scheduled upstream sync records each new base revision and merges upstream
+into the complete fork history without rewriting it. Conflicts abort the merge
+and stop the workflow with a job summary;
 the fork's GitHub issues are disabled. Custom release notes use the pinned
 revision so upstream history is not listed as custom patches.
 
@@ -30,3 +31,19 @@ The isolated HTTP regressions for room preferences and invite delivery are
 registered in default/all-feature database CI. The custom Docker fixture also
 checks standard tag bodies, account-data echoes and cleared unread counters on
 both release architectures.
+
+
+On 2026-11-17 the fork merged upstream `3e036e82` after scheduled patch replay
+conflicted with upstream's replacement for the incremental active-room filter
+(#696). The old custom filter was removed in favor of upstream's batched
+publication/activity checks. Receipt notification cursors now use upstream's
+transactional projection; custom initial/full-state unread counts, room tags,
+invite-to-join state and prompt verification delivery remain in place.
+
+The sync script preserves mixed source/CI commits through normal merges and
+uses a fast-forward push, so concurrent fork updates cannot be overwritten.
+Its disposable-repository tests cover preserved custom history, a no-op sync,
+conflict cleanup and a competing writer. Changes to the sync workflow/script
+run these checks and the sync immediately; ordinary custom commits still use
+the custom release workflow. Both release architectures must pass the existing
+HTTP Docker fixture before publishing an image.

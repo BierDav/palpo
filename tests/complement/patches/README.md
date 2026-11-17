@@ -5,6 +5,45 @@ These patches apply only to the pinned Complement revision in
 them, then runs the runner unit tests. Do not silently rebase patches when
 updating Complement: review the upstream behavior first.
 
+## device-list-query-keys.patch
+
+The three `TestDeviceListsUpdateOverFederation` connectivity cases already
+require exact device-list notifications after a new device uploads its keys.
+They now also query Alice's new device from Bob's remote homeserver after normal
+connectivity, reconnection and a server stop/restart. The query must have no
+server failures, return the correct user/device IDs, and contain both uploaded
+public keys with their exact values. Map lookups preserve IDs containing dots
+without treating them as JSON path expressions.
+
+This completes the remote-key-content assertion requested by
+[#573](https://github.com/palpo-im/palpo/issues/573). Existing strict notification
+assertions and all three entries in `required_pass/device-list-versions.json`
+remain mandatory. The patch applies to the pinned revision; it strengthens the
+fixture and does not mask a server failure.
+
+## public-rooms-pagination.patch
+
+`TestRoomState/Parallel/GET_/publicRooms_lists_newly-created_room` creates a
+public room alongside thirteen other public-room fixtures, then searches only
+the default first directory page. Palpo defaults to ten results and orders ties
+by room ID, so a correctly published room can remain on a later page for the
+entire three-second retry window. PR #684's first Complement attempt failed
+this assertion while its other cases passed
+([run](https://github.com/palpo-im/palpo/actions/runs/43825493919)).
+
+The patch follows opaque `next_batch` tokens within each publication retry. It
+still fails when the room is absent from the directory, and rejects malformed
+pages, HTTP errors, repeated tokens and traversals exceeding 100 pages. It keeps
+the existing publication timeout and the server's production page size.
+
+CI copies `overlays/public_rooms_pagination_test.go` into the pinned checkout.
+Its standalone HTTP fixture places the target after a full ten-room first page
+and verifies preservation of an opaque token containing reserved characters.
+Additional cases cover missing rooms and invalid/non-progressing pagination.
+These tests run before the image build and again in the full suite. The
+required-case manifest enforces both the helper tests and the original room
+publication assertion.
+
 ## registration-uiaa.patch
 
 - Complete an advertised dummy-only UIAA registration flow with the issued

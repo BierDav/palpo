@@ -17,6 +17,7 @@ on:
       - 'tests/dependency_policy*.py'
       - 'tests/complement/**'   # keep all gates current on federation-test fixes
       - '.github/workflows/**'  # or workflow changes
+      - '.github/scripts/**'    # or publication guard changes
   push:
     branches:
       - main
@@ -30,6 +31,7 @@ on:
       - 'tests/dependency_policy*.py'
       - 'tests/complement/**'   # keep all gates current on federation-test fixes
       - '.github/workflows/**'  # or workflow changes
+      - '.github/scripts/**'    # or publication guard changes
 
 jobs:
   typos:
@@ -37,6 +39,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Publication ref guard regressions
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s .github/scripts -p 'test_check_publish_ref.py'
       - name: Typos check with custom config file
         uses: crate-ci/typos@v1.52.2
 
@@ -130,6 +134,12 @@ jobs:
         timeout-minutes: 40
         run: cargo test --all --all-features --no-fail-fast -- --nocapture
 
+      - name: Isolated sliding sync v4 protocol feature
+        run: cargo test --locked -p palpo-core --no-default-features --features unstable-msc4186 client::sync_events::v4::tests
+
+      - name: Isolated thread update protocol feature
+        run: cargo test --locked -p palpo-core --no-default-features --features unstable-msc4360 client::thread_updates::tests
+
       - name: PostgreSQL regression tests
         env:
           PALPO_TEST_DATABASE_URL: postgres://palpo_test:palpo_test@localhost/palpo_test
@@ -195,6 +205,8 @@ jobs:
             sync_v3::invite_join_tests::http_classic_invite_join_at_returned_timeline_boundary
             sync_v3::invite_join_tests::http_sliding_invite_join_and_required_state_without_timeline
             sync_v3::resource_review_tests::review_sync_batches_frames_and_skips_empty_event_sections
+            media::preview::delegation::tests::review_appservice_previews_opt_in_policy_and_failures
+            media::preview::delegation::tests::review_appservice_previews_disabled_uses_local_cache
             room::auth_chain::federation_access_tests::review_federation_event_reads_bind_rooms_before_auth_cache
             sync_v3::account_data_publication_tests::review_account_data_publication_fences_sync_and_releases_failures
             federation::error_response_tests::review_federation_error_transport_is_bounded
@@ -207,10 +219,14 @@ jobs:
             routing::client::oidc::tests::review_security_receipts_sessions_and_oidc_bindings
             sync_v3::resource_review_tests::review_live_promotion_and_purge_share_fence_and_atomic_tips
             sync_v3::resource_review_tests::review_filtered_room_skips_payloads_and_keeps_independent_membership
+            sync_v3::resource_review_tests::review_sync_notification_queries_follow_emitted_fields
+            sync_v3::resource_review_tests::review_filtered_sync_skips_inert_rooms_without_losing_sticky_or_read_updates
+            sync_v3::activity_review_tests::review_incremental_sync_skips_quiet_rooms_and_delivers_independent_updates
             concurrency_review_tests::review_purge_preserves_tips_and_resumes_committed_batches
             concurrency_review_tests::review_receipt_latest_projection_retains_log_and_threads
             watcher::review_tests::review_watch_receipts_presence_and_pre_response_baseline
             routing::admin::contract_tests::review_admin_operations_report_committed_results_and_failures
+            sync_v3::to_device_batch_tests::to_device_batches_retry_and_ack_without_skipping_backlog
             routing::client::room::state::state_snapshot_tests::review_state_gets_share_departure_snapshot_and_rejoin_boundary
             routing::client::media::upload_tests::http_reserved_media_enforces_owner_and_safe_download_headers
             media::upload::tests::review_reserved_upload_serializes_and_recovers_storage_and_db_failures
@@ -293,6 +309,35 @@ jobs:
               index=$((index + 1))
             done
           done
+
+      - name: MSC4560 stripped-state authorization regressions
+        timeout-minutes: 10
+        run: |
+          index=0
+          for case in review_stripped_state_visibility_validation_and_signed_federation review_stripped_state_disabled; do
+            test="stripped_state::tests::$case"
+            cargo test --locked -p palpo --lib --all-features "$test" -- --list --ignored --exact | grep -F "$test: test"
+            database="palpo_stripped_${index}"
+            sudo -u postgres createdb -O palpo_test "$database"
+            PALPO_TEST_DATABASE_URL="postgres://palpo_test:palpo_test@localhost/$database" \
+              cargo test --locked -p palpo --lib --all-features "$test" -- --ignored --exact --test-threads=1
+            index=$((index + 1))
+          done
+
+      - name: Alias mutation and generation upgrade regressions
+        timeout-minutes: 15
+        run: |
+          # Each integration case owns process-wide startup state and requires
+          # an empty database. Keep them out of the shared library test batch.
+          cargo test --locked --workspace --all-features --test alias_atomic_contracts --test alias_generation_upgrade --no-run
+          cargo test --locked --workspace --all-features --test alias_atomic_contracts -- --list --ignored --exact alias_mutations_are_atomic_and_report_mapping_conflicts | grep -F 'alias_mutations_are_atomic_and_report_mapping_conflicts: test'
+          sudo -u postgres createdb -O palpo_test palpo_alias_contracts
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_alias_contracts \
+            cargo test --locked --workspace --all-features --test alias_atomic_contracts -- --ignored --exact alias_mutations_are_atomic_and_report_mapping_conflicts
+          cargo test --locked --workspace --all-features --test alias_generation_upgrade -- --list --ignored --exact legacy_alias_generations_upgrade_once_and_advance_on_same_value_updates | grep -F 'legacy_alias_generations_upgrade_once_and_advance_on_same_value_updates: test'
+          sudo -u postgres createdb -O palpo_test palpo_alias_generation_upgrade
+          PALPO_TEST_DATABASE_URL=postgres://palpo_test:palpo_test@localhost/palpo_alias_generation_upgrade \
+            cargo test --locked --workspace --all-features --test alias_generation_upgrade -- --ignored --exact legacy_alias_generations_upgrade_once_and_advance_on_same_value_updates
 
       - name: Embedding startup PostgreSQL regression
         timeout-minutes: 10

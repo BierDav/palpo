@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 
 use diesel::prelude::*;
-use horme::{OptionalExtension as _, RunQueryDsl};
+use horme::RunQueryDsl;
 use indexmap::IndexMap;
 use lru_cache::LruCache;
 
@@ -27,7 +27,7 @@ use crate::{AppError, AppResult, MatrixError, utils};
 static JOIN_SN_CACHE: LazyLock<Mutex<LruCache<OwnedEventId, Seqnum>>> =
     LazyLock::new(|| Mutex::new(LruCache::new(10_000)));
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct UserNotifySummary {
     pub notification_count: u64,
     pub unread_count: u64,
@@ -144,18 +144,40 @@ pub async fn highlight_count(user_id: &UserId, room_id: &RoomId) -> AppResult<u6
 }
 
 pub async fn last_read_notification(user_id: &UserId, room_id: &RoomId) -> AppResult<Seqnum> {
-    // A receipt is a new update even when it reads an old message. Sync cursors
-    // must compare its publication position, not the target event's position.
-    let sn = event_receipts::table
-        .filter(event_receipts::user_id.eq(user_id))
-        .filter(event_receipts::room_id.eq(room_id))
-        .order_by(event_receipts::sn.desc())
-        .select(event_receipts::sn)
-        .first::<Seqnum>(&mut crate::data::db())
-        .await
-        .optional()?
-        .unwrap_or_default();
-    Ok(sn)
+    let cursors = last_read_notifications(user_id, &[room_id.to_owned()]).await?;
+    Ok(cursors.get(room_id).copied().unwrap_or_default())
+}
+
+// The transactional projection has one row per user/room. Neither aggregates
+// nor planner-dependent top-one probes should scan the append-only history.
+pub(crate) const NOTIFICATION_CURSOR_QUERY: &str = "\
+    SELECT room_id, sn FROM event_receipts_notification_cursors \
+    WHERE user_id = $1 AND room_id = ANY($2::text[])";
+
+/// The latest receipt publication per room, using the transactional projection.
+/// Missing receipts mean zero; query failures must not advance a sync cursor.
+pub(crate) async fn last_read_notifications(
+    user_id: &UserId,
+    rooms: &[OwnedRoomId],
+) -> AppResult<HashMap<OwnedRoomId, Seqnum>> {
+    use diesel::sql_types::{Array, BigInt, Text};
+    #[derive(diesel::QueryableByName)]
+    struct Cursor {
+        #[diesel(sql_type = Text)]
+        room_id: OwnedRoomId,
+        #[diesel(sql_type = BigInt)]
+        sn: Seqnum,
+    }
+    let mut result = HashMap::new();
+    for chunk in rooms.chunks(256) {
+        let rows = diesel::sql_query(NOTIFICATION_CURSOR_QUERY)
+            .bind::<Text, _>(user_id.as_str())
+            .bind::<Array<Text>, _>(chunk.iter().map(|room| room.as_str()).collect::<Vec<_>>())
+            .load::<Cursor>(&mut crate::data::db())
+            .await?;
+        result.extend(rows.into_iter().map(|cursor| (cursor.room_id, cursor.sn)));
+    }
+    Ok(result)
 }
 
 pub async fn shared_rooms(user_ids: Vec<OwnedUserId>) -> AppResult<Vec<OwnedRoomId>> {

@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 authors = ["Chrislearn Young <chris@acroidea.com>"]
 edition = "2024"
 rust-version = "1.96"
@@ -19,11 +19,11 @@ keywords = ["http", "async", "web", "framework", "server"]
 license = "Apache-2.0"
 
 [workspace.dependencies]
-palpo-core = { version = "0.5.0", path = "crates/core" }
-palpo-core-macros = { version = "0.5.0", path = "crates/core-macros" }
-palpo-data = { version = "0.5.0", path = "crates/data" }
-palpo-identifiers-validation = { version = "0.5.0", path = "crates/identifiers-validation" }
-palpo-server-macros = { version = "0.5.0", path = "crates/server-macros" }
+palpo-core = { version = "0.6.0", path = "crates/core" }
+palpo-core-macros = { version = "0.6.0", path = "crates/core-macros" }
+palpo-data = { version = "0.6.0", path = "crates/data" }
+palpo-identifiers-validation = { version = "0.6.0", path = "crates/identifiers-validation" }
+palpo-server-macros = { version = "0.6.0", path = "crates/server-macros" }
 
 rust-argon2 = "3.0.0"
 ctor = "1.0.7"
@@ -105,10 +105,10 @@ regex-automata = "0.4"
 reqwest = { version = "0.13.4", features = ["json", "form"] }
 ring = "0.17.14"
 # Matrix identifiers may contain encoded slashes within one path segment.
-# Salvo 1.1.2 rejects those before routing; keep both the facade and actual
-# router core pinned until the path encoding contract passes on an upgrade.
-salvo = { version = "=1.0.1", features = ["rustls"]}
-salvo_core = { version = "=1.0.1", default-features = false }
+# Keep the facade and actual router core on the same exact version. Upgrades
+# must pass crates/server/tests/path_encoding_contract.rs before merging.
+salvo = { version = "=1.2.1", features = ["rustls"]}
+salvo_core = { version = "=1.2.1", default-features = false }
 sanitize-filename = "0.6.0"
 scheduled-thread-pool = "0.2.7"
 secrecy = "0.10.3"
@@ -160,3 +160,7 @@ large_enum_variant = "allow"
 [profile.release]
 codegen-units = 1
 lto = true
+
+# Preserve AVIF encoding with the compatible 0.8 maintenance backport.
+[patch.crates-io]
+rav1e = { git = "https://github.com/chrislearn/rav1e", rev = "d2deddc58fdbbb30aafbc550836454910de91af9" }
