@@ -222,6 +222,8 @@ jobs:
             sync_v3::resource_review_tests::review_sync_notification_queries_follow_emitted_fields
             sync_v3::resource_review_tests::review_filtered_sync_skips_inert_rooms_without_losing_sticky_or_read_updates
             sync_v3::activity_review_tests::review_incremental_sync_skips_quiet_rooms_and_delivers_independent_updates
+            sync_v3::thread_notification_tests::review_thread_notification_filter_skips_unchanged_rooms_and_delivers_thread_counts
+            sync_v3::thread_notification_tests::review_lateral_frame_capture_matches_distinct_on_publication_frames
             concurrency_review_tests::review_purge_preserves_tips_and_resumes_committed_batches
             concurrency_review_tests::review_receipt_latest_projection_retains_log_and_threads
             watcher::review_tests::review_watch_receipts_presence_and_pre_response_baseline

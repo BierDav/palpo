@@ -40,6 +40,20 @@ publication/activity checks. Receipt notification cursors now use upstream's
 transactional projection; custom initial/full-state unread counts, room tags,
 invite-to-join state and prompt verification delivery remain in place.
 
+Also on 2026-11-17, classic incremental sync stopped reloading every joined
+room when the filter sets `unread_thread_notifications` (Element Web's stored
+filter does). Upstream disabled the unchanged-room skip for that filter, so a
+567-room account spent 6–13 seconds per pass and saw new messages 8–20 seconds
+late. Every push-summary write now advances the per-room notification cursor
+(`event_receipts_notification_cursors`) under the receipt stream fence. That
+includes push actions evaluated after an event's publication and summary
+rebuilds; receipts already did so. The existing batched cursor check therefore
+proves that main and per-thread counts are unchanged, and the long-poll watcher
+wakes on count-only changes. Publication-frame capture now probes each room's
+newest publication through `(room_id, live_published_sn DESC)` and falls back to
+the full scan only if that row is not accepted. Production data gave the same
+567 rows in about 9 ms instead of about 220 ms.
+
 The sync script preserves mixed source/CI commits through normal merges and
 uses a fast-forward push, so concurrent fork updates cannot be overwritten.
 Its disposable-repository tests cover preserved custom history, a no-op sync,

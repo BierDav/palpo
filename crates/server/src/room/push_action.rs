@@ -63,7 +63,7 @@ pub async fn upsert_push_action(
         unread: false,
         thread_id,
     };
-    crate::data::db()
+    let changed = crate::data::db()
         .transaction::<_, AppError, _>(async |conn| {
             lock_summary(conn, user_id, room_id).await?;
             // A retried append must not resurrect an action already removed by
@@ -83,7 +83,7 @@ pub async fn upsert_push_action(
             .get_result::<AlreadyRead>(conn)
             .await?;
             if read.seen {
-                return Ok(());
+                return Ok(false);
             }
             let inserted = diesel::insert_into(event_push_actions::table)
                 .values(&action)
@@ -93,7 +93,7 @@ pub async fn upsert_push_action(
                 .await
                 .optional()?;
             if inserted.is_none() || (!notify && !highlight) {
-                return Ok(());
+                return Ok(false);
             }
             let conflict = if action.thread_id.is_some() {
                 "(user_id, room_id, thread_id) WHERE thread_id IS NOT NULL"
@@ -117,9 +117,28 @@ pub async fn upsert_push_action(
             .bind::<BigInt, _>(stream_ordering)
             .execute(conn)
             .await?;
-            Ok(())
+            // Actions are evaluated after the event's live publication, so a
+            // sync may already have delivered the event with the old counts.
+            publish_count_change(conn, user_id, room_id).await?;
+            Ok(true)
         })
-        .await
+        .await?;
+    if changed {
+        crate::data::sync_watch::notify();
+    }
+    Ok(())
+}
+
+/// Count changes without a receipt publication advance the notification
+/// cursor, so incremental sync cannot skip a room whose counts changed.
+async fn publish_count_change(
+    conn: &mut AsyncPgConnection,
+    user_id: &UserId,
+    room_id: &RoomId,
+) -> AppResult<()> {
+    crate::data::room::receipt::publish_notification_change_with_conn(conn, user_id, room_id)
+        .await?;
+    Ok(())
 }
 
 /// Clear exactly the receipt's scope and rebuild its summaries in the same
@@ -195,18 +214,24 @@ pub async fn remove_actions_for_room(user_id: &UserId, room_id: &RoomId) -> AppR
             )
             .execute(conn)
             .await?;
-            refresh_locked(conn, user_id, room_id).await
+            refresh_locked(conn, user_id, room_id).await?;
+            publish_count_change(conn, user_id, room_id).await
         })
-        .await
+        .await?;
+    crate::data::sync_watch::notify();
+    Ok(())
 }
 
 pub async fn refresh_notify_summary(user_id: &UserId, room_id: &RoomId) -> AppResult<()> {
     crate::data::db()
         .transaction::<_, AppError, _>(async |conn| {
             lock_summary(conn, user_id, room_id).await?;
-            refresh_locked(conn, user_id, room_id).await
+            refresh_locked(conn, user_id, room_id).await?;
+            publish_count_change(conn, user_id, room_id).await
         })
-        .await
+        .await?;
+    crate::data::sync_watch::notify();
+    Ok(())
 }
 
 async fn refresh_locked(

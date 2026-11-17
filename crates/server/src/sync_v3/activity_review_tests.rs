@@ -278,5 +278,7 @@ async fn run() {
         serde_json::from_value(json!({"room":{"timeline":{"unread_thread_notifications":true}}}))
             .unwrap(),
     ));
-    sync_needed(&sender, &room, &mut args).await;
+    // Per-thread counts change only with a notification cursor update, so the
+    // unchanged room is skipped (thread_notification_tests covers changes).
+    sync_quiet(&sender, &room, &mut args).await;
 }

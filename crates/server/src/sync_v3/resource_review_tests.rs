@@ -208,7 +208,7 @@ async fn filtered_batch() {
     assert_eq!(
         spy.snapshot()
             .iter()
-            .filter(|q| q.contains("DISTINCT ON"))
+            .filter(|q| q.contains("CROSS JOIN LATERAL"))
             .count(),
         2
     );
@@ -251,7 +251,7 @@ async fn filtered_batch() {
     );
     let frame_batches = queries
         .iter()
-        .filter(|q| q.contains("DISTINCT ON") && q.contains("live_published_frame_id"))
+        .filter(|q| q.contains("CROSS JOIN LATERAL") && q.contains("live_published_frame_id"))
         .count();
     assert_eq!(
         frame_batches, 2,
@@ -529,6 +529,14 @@ async fn notification_queries() {
         queries.iter().any(|q| q.contains("event_receipts")),
         "read progress was not independently checked"
     );
+    // Raw seeding bypasses the summary writers, which advance this cursor.
+    // Without it the unchanged room is skipped, including for thread counts.
+    data::db()
+        .transaction::<_, data::DataError, _>(async |conn| {
+            data::room::receipt::publish_notification_change_with_conn(conn, &sender, &room).await
+        })
+        .await
+        .unwrap();
     let mut thread_filter = filter.clone();
     thread_filter["room"]["timeline"]["unread_thread_notifications"] = json!(true);
     let thread_args: SyncEventsReqArgs =
@@ -546,8 +554,10 @@ async fn notification_queries() {
         body.unread_thread_notifications[&root].highlight_count,
         Some(1)
     );
-    assert!(body.unread_notifications.notification_count.is_none());
-    assert!(body.unread_count.is_none());
+    // The changed cursor also emits the main-timeline counts, excluding threads.
+    assert_eq!(body.unread_notifications.notification_count, Some(3));
+    assert_eq!(body.unread_notifications.highlight_count, Some(1));
+    assert_eq!(body.unread_count, Some(12));
     assert_eq!(
         spy.snapshot()
             .iter()
@@ -578,6 +588,12 @@ async fn notification_queries() {
     assert_eq!(body.unread_notifications.highlight_count, Some(2));
     assert_eq!(body.unread_count, Some(12));
     assert!(body.unread_thread_notifications.is_empty());
+    // The new message's push action changed the counts after `since`. From the
+    // visible response on, the room is idle again.
+    let args: SyncEventsReqArgs = serde_json::from_value(
+        json!({"since":visible.next_batch.clone(),"filter":filter.to_string()}),
+    )
+    .unwrap();
     // Required summary failures propagate; omitted summaries need no table access.
     diesel::sql_query("ALTER TABLE event_push_summaries RENAME TO review_missing_push_summaries")
         .execute(&mut data::db())

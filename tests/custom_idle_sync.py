@@ -251,7 +251,46 @@ VALUES ('@fixture:fixture.test', 'FIXTURE', 'fixture-access', 0),
     assert any(event["type"] == "m.key.verification.key"
                for event in response["extensions"]["to_device"]["events"]), response
     assert "@other:fixture.test" in response["extensions"]["e2ee"]["device_lists"]["changed"], response
-    print(f"PASS: invite/join boundaries, required-state-only sync, idle key counts, incremental events, and 405-room encryption sync ({elapsed:.3f}s)")
+
+    # Element Web's stored filter requests per-thread counts. Unchanged rooms
+    # must still be skipped, while thread count changes reach the client.
+    element_filter = urllib.parse.quote(json.dumps({"room": {
+        "state": {"lazy_load_members": True},
+        "timeline": {"unread_thread_notifications": True},
+    }}), safe="")
+
+    def element_sync(since=None):
+        path = "sync?timeout=0&filter=" + element_filter
+        if since is not None:
+            path += "&since=" + since
+        started = time.monotonic()
+        body = request(path)
+        return body, time.monotonic() - started
+
+    root = request(f"rooms/{target_room}/send/m.room.message/thread-root",
+                   {"msgtype": "m.text", "body": "thread root"}, method="PUT", token="other-access")
+    thread_since = element_sync()[0]["next_batch"]
+    request(f"rooms/{target_room}/send/m.room.message/thread-reply", {
+        "msgtype": "m.text", "body": "thread reply",
+        "m.relates_to": {"rel_type": "m.thread", "event_id": root["event_id"]},
+    }, method="PUT", token="other-access")
+    threaded, _ = element_sync(thread_since)
+    assert list(threaded["rooms"]["join"]) == [target_room], threaded
+    counts = threaded["rooms"]["join"][target_room]["unread_thread_notifications"]
+    assert counts[root["event_id"]]["notification_count"] == 1, threaded
+    request(f"rooms/{other_room}/send/m.room.message/advance-thread-idle",
+            {"msgtype": "m.text", "body": "advance"}, method="PUT", token="other-access")
+    idle, thread_elapsed = element_sync(threaded["next_batch"])
+    assert idle.get("rooms", {}).get("join", {}) == {}, idle
+    assert thread_elapsed < 2, f"{len(rooms)}-room thread-count idle sync took {thread_elapsed:.3f}s"
+    reply_id = threaded["rooms"]["join"][target_room]["timeline"]["events"][-1]["event_id"]
+    request(f"rooms/{target_room}/receipt/m.read/{reply_id}", {"thread_id": root["event_id"]})
+    cleared, _ = element_sync(idle["next_batch"])
+    cleared_room = cleared["rooms"]["join"][target_room]
+    assert cleared_room.get("unread_thread_notifications", {}).get(root["event_id"], {}).get(
+        "notification_count", 0) == 0, cleared
+    print(f"PASS: invite/join boundaries, required-state-only sync, idle key counts, incremental events, "
+          f"405-room encryption sync ({elapsed:.3f}s), and thread-count idle sync ({thread_elapsed:.3f}s)")
 except Exception:
     subprocess.run(["docker", "logs", server, "--tail", "60"])
     raise

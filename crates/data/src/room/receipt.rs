@@ -48,6 +48,33 @@ pub async fn publish_receipt_with_conn(
     Ok(())
 }
 
+/// Advance the user's notification cursor for a room after a push-summary
+/// write that publishes no receipt (for example a push action evaluated after
+/// its event was already delivered). Sync uses this cursor to decide whether
+/// per-room and per-thread counts may have changed since a token, so every
+/// summary change must move it. Same lock rules as `publish_receipt_with_conn`.
+pub async fn publish_notification_change_with_conn(
+    conn: &mut AsyncPgConnection,
+    user_id: &UserId,
+    room_id: &RoomId,
+) -> DataResult<()> {
+    diesel::sql_query("SELECT pg_advisory_xact_lock_shared($1)")
+        .bind::<diesel::sql_types::BigInt, _>(RECEIPT_STREAM_LOCK)
+        .execute(conn)
+        .await?;
+    diesel::sql_query(
+        "INSERT INTO event_receipts_notification_cursors (user_id, room_id, sn) \
+         VALUES ($1, $2, nextval('occur_sn_seq')) \
+         ON CONFLICT (user_id, room_id) DO UPDATE \
+         SET sn = GREATEST(event_receipts_notification_cursors.sn, EXCLUDED.sn)",
+    )
+    .bind::<diesel::sql_types::Text, _>(user_id.as_str())
+    .bind::<diesel::sql_types::Text, _>(room_id.as_str())
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 /// Returns an iterator over the most recent read_receipts in a room that happened after the event
 /// with id `since`.
 pub async fn read_receipts(

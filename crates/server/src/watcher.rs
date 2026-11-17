@@ -13,6 +13,8 @@ pub(crate) struct WatchSnapshot {
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     receipt_sn: i64,
     #[diesel(sql_type = diesel::sql_types::BigInt)]
+    notification_sn: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
     presence_sn: i64,
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     inbox_id: i64,
@@ -32,6 +34,7 @@ impl WatchSnapshot {
     fn has_updates_since(&self, previous: &Self) -> bool {
         self.typing_sn > previous.typing_sn
             || self.receipt_sn > previous.receipt_sn
+            || self.notification_sn > previous.notification_sn
             || self.presence_sn > previous.presence_sn
             || self.inbox_id > previous.inbox_id
             || self.key_change_id > previous.key_change_id
@@ -64,6 +67,7 @@ pub(crate) async fn load_watch_snapshot(
         )
         SELECT
           COALESCE((SELECT MAX(sn) FROM event_receipts WHERE room_id IN (SELECT room_id FROM joined_rooms) AND (ty <> 'm.read.private' OR user_id = $1)), 0) AS receipt_sn,
+          COALESCE((SELECT MAX(sn) FROM event_receipts_notification_cursors WHERE user_id = $1), 0) AS notification_sn,
           COALESCE((SELECT MAX(occur_sn) FROM user_presences WHERE user_id = $1 OR user_id IN (SELECT user_id FROM shared_users)), 0) AS presence_sn,
           COALESCE((SELECT MAX(occur_sn) FROM room_typings WHERE room_id IN (SELECT room_id FROM joined_rooms)), 0) AS typing_sn,
           COALESCE((SELECT MAX(id) FROM device_inboxes WHERE user_id = $1 AND device_id = $2), 0) AS inbox_id,

@@ -60,45 +60,72 @@ struct RoomPublication {
 
 /// Capture per-room publication frames with bounded SQL batches. These bounds
 /// match the scalar lookup; current room tips may be newer than this response.
+///
+/// Each room first reads only its newest publication from
+/// `(room_id, live_published_sn DESC)`. When that row is accepted it is the
+/// answer; otherwise the lazily executed second branch scans for the newest
+/// accepted publication. This avoids sorting every publication of every room.
+const CAPTURED_FRAMES_QUERY: &str = "\
+    SELECT r.room_id, p.frame_id, p.sn \
+    FROM unnest($1::text[]) AS r(room_id) \
+    CROSS JOIN LATERAL (( \
+        SELECT top.live_published_frame_id AS frame_id, top.live_published_sn AS sn \
+        FROM ( \
+            SELECT point.event_id, point.live_published_frame_id, point.live_published_sn \
+            FROM event_points AS point \
+            WHERE point.room_id = r.room_id AND point.live_published_sn IS NOT NULL \
+              AND point.live_published_sn <= $2 \
+            ORDER BY point.live_published_sn DESC LIMIT 1 \
+        ) AS top \
+        JOIN events AS event ON event.id = top.event_id AND event.room_id = r.room_id \
+        WHERE top.live_published_frame_id IS NOT NULL \
+          AND NOT event.is_outlier AND NOT event.soft_failed AND NOT event.is_rejected \
+          AND event.stream_ordering >= 0 \
+    ) UNION ALL ( \
+        SELECT point.live_published_frame_id, point.live_published_sn \
+        FROM event_points AS point \
+        JOIN events AS event ON event.id = point.event_id AND event.room_id = point.room_id \
+        WHERE point.room_id = r.room_id AND point.live_published_sn IS NOT NULL \
+          AND point.live_published_frame_id IS NOT NULL AND point.live_published_sn <= $2 \
+          AND NOT event.is_outlier AND NOT event.soft_failed AND NOT event.is_rejected \
+          AND event.stream_ordering >= 0 \
+        ORDER BY point.live_published_sn DESC LIMIT 1 \
+    ) LIMIT 1) AS p";
+
 async fn captured_sync_frames(
     rooms: &[OwnedRoomId],
     until: Seqnum,
 ) -> AppResult<HashMap<OwnedRoomId, RoomPublication>> {
-    use diesel::prelude::*;
+    use diesel::sql_types::{Array, BigInt, Text};
     use horme::RunQueryDsl;
 
-    use crate::data::schema::{event_points, events};
+    #[derive(diesel::QueryableByName)]
+    struct Row {
+        #[diesel(sql_type = Text)]
+        room_id: OwnedRoomId,
+        #[diesel(sql_type = BigInt)]
+        frame_id: i64,
+        #[diesel(sql_type = BigInt)]
+        sn: Seqnum,
+    }
     let mut frames = HashMap::new();
     for chunk in rooms.chunks(256) {
-        let rows = event_points::table
-            .inner_join(
-                events::table.on(events::id
-                    .eq(event_points::event_id)
-                    .and(events::room_id.eq(event_points::room_id))),
-            )
-            .filter(event_points::room_id.eq_any(chunk))
-            .filter(event_points::live_published_frame_id.is_not_null())
-            .filter(events::is_outlier.eq(false))
-            .filter(events::soft_failed.eq(false))
-            .filter(events::is_rejected.eq(false))
-            .filter(events::stream_ordering.ge(0))
-            .filter(event_points::live_published_sn.le(until))
-            .distinct_on(event_points::room_id)
-            .order_by((
-                event_points::room_id.asc(),
-                event_points::live_published_sn.desc(),
-            ))
-            .select((
-                event_points::room_id,
-                event_points::live_published_frame_id,
-                event_points::live_published_sn,
-            ))
-            .load::<(OwnedRoomId, Option<i64>, Option<Seqnum>)>(&mut data::db())
+        let mut ids = chunk.iter().map(|room| room.as_str()).collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids.dedup();
+        let rows = diesel::sql_query(CAPTURED_FRAMES_QUERY)
+            .bind::<Array<Text>, _>(ids)
+            .bind::<BigInt, _>(until)
+            .load::<Row>(&mut data::db())
             .await?;
-        frames.extend(rows.into_iter().filter_map(|(room, frame, sn)| {
-            frame
-                .zip(sn)
-                .map(|(frame_id, sn)| (room, RoomPublication { frame_id, sn }))
+        frames.extend(rows.into_iter().map(|row| {
+            (
+                row.room_id,
+                RoomPublication {
+                    frame_id: row.frame_id,
+                    sn: row.sn,
+                },
+            )
         }));
     }
     Ok(frames)
@@ -332,7 +359,10 @@ pub async fn sync_events(
     } else {
         None
     };
-    let can_skip = incremental && !filter.room.timeline.unread_thread_notifications;
+    // Every push-summary change, including per-thread counts from late push
+    // actions and threaded receipts, advances the notification cursor. An
+    // unchanged room can therefore be skipped under unread_thread_notifications.
+    let can_skip = incremental;
     let auxiliary_rooms = if can_skip {
         changed_auxiliary_rooms(
             sender_id,
@@ -2249,6 +2279,9 @@ mod resource_review_tests;
 
 #[cfg(test)]
 mod activity_review_tests;
+
+#[cfg(test)]
+mod thread_notification_tests;
 
 #[cfg(test)]
 mod protocol_contract_tests;
