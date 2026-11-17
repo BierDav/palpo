@@ -245,6 +245,7 @@ jobs:
             user::key::publication_tests::review_key_change_publication_fence_survives_commit_rollback_and_cancellation
             sending::guard::readiness_tests::review_readiness_http_tracks_pool_and_sender_recovery_without_breaking_liveness
             routing::client::key::key_changes_tests::review_keys_changes_tracks_shared_encrypted_membership_windows
+            user::device_lists::batch_tests::review_device_lists_batch_rooms_and_pin_changed_and_left
             directory::tests::review_public_rooms_filters_networks_and_bidirectional_pages
             room::timeline::batch_tests::review_timeline_batch_preserves_events_and_bounds_storage_queries
             directory::batch_tests::review_public_directory_batching_preserves_pages_and_measures_queries

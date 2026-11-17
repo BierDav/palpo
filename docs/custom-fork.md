@@ -61,3 +61,18 @@ conflict cleanup and a competing writer. Changes to the sync workflow/script
 run these checks and the sync immediately; ordinary custom commits still use
 the custom release workflow. Both release architectures must pass the existing
 HTTP Docker fixture before publishing an image.
+
+Device-list tracking (`device_lists::changes`, shared by classic sync, sliding
+sync and `/keys/changes`) no longer walks every room the user was ever in. It
+used to look up each room's publication frame separately at both window
+endpoints and re-decode each frame's membership on every pass. For a 569-room
+account that was more than 2,000 sequential queries and 1.5–4.5 s per sync
+pass. Now one LATERAL statement locates every candidate room's frame at both
+endpoints through `event_points_room_live_publication`. On production data it
+returns the same 569 rows in about 10 ms. Decoded frame membership, which is
+immutable, is kept in a process-wide cache bounded by frames and member
+pointers. Failed decodes are never cached, so missing member events still fail
+closed. When no candidate room published new state in the window, the
+membership comparison is skipped and only the existing key-change query runs.
+A repeated or key-only window therefore costs two statements, whatever the
+room count.
