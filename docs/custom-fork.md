@@ -76,3 +76,11 @@ closed. When no candidate room published new state in the window, the
 membership comparison is skipped and only the existing key-change query runs.
 A repeated or key-only window therefore costs two statements, whatever the
 room count.
+
+The default Sliding Sync build now sends new list positions and room data
+when a client expands its room list during an idle poll. A count-only reply
+used to tell Element X to advance without receiving those rooms. The server
+can still send a count-only reply for an unchanged, acknowledged window.
+The custom release fixture tests the growing window over HTTP without
+advancing the event cursor. Room ordering uses one indexed event lookup per
+candidate room to keep the idle comparison cheap.

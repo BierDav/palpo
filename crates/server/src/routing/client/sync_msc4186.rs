@@ -170,13 +170,8 @@ fn should_long_poll(
     previous_list_counts: &std::collections::BTreeMap<String, usize>,
     previous_list_windows: &crate::sync_v5::ListWindows,
 ) -> bool {
-    #[cfg(feature = "unstable-msc4494")]
-    if crate::sync_v5::has_list_window_updates(response, previous_list_windows) {
-        return false;
-    }
-    #[cfg(not(feature = "unstable-msc4494"))]
-    let _ = previous_list_windows;
     response.is_empty_for_long_poll()
+        && !crate::sync_v5::has_list_window_updates(response, previous_list_windows)
         && (since_is_ahead || (has_pos && !has_list_count_changes(response, previous_list_counts)))
 }
 
@@ -307,7 +302,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "unstable-msc4494")]
     #[test]
     fn changed_list_positions_are_returned_even_without_room_or_count_updates() {
         use crate::core::client::sync_events::v5::SyncListOp;

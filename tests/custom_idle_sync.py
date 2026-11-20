@@ -83,6 +83,36 @@ VALUES ('@fixture:fixture.test', 'FIXTURE', 'fixture-access', 0),
     # Verify active_joined_rooms optimization delivers both to_device events and room messages.
     import urllib.parse
     rooms = [request("createRoom", {})["room_id"] for _ in range(15)]
+
+    # Element X grows its window using the returned count. Confirm that new
+    # positions and room data arrive even when the event cursor does not move.
+    sliding_path = "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync"
+
+    def room_list(end, pos=None):
+        body = {"conn_id": "room-list", "lists": {
+            "all_rooms": {"ranges": [[0, end]], "timeline_limit": 0},
+        }}
+        path = sliding_path + "?timeout=0"
+        if pos is not None:
+            path += "&pos=" + urllib.parse.quote(pos, safe="")
+        return request(path, body)
+
+    first = room_list(2)
+    first_list = first["lists"]["all_rooms"]
+    assert first_list["count"] == len(rooms), first_list
+    assert first_list["ops"][0]["range"] == [0, 2], first_list
+    expanded = room_list(9, first["pos"])
+    assert expanded["pos"].split("_")[0] == first["pos"].split("_")[0], expanded["pos"]
+    expanded_list = expanded["lists"]["all_rooms"]
+    assert expanded_list["count"] == len(rooms), expanded_list
+    expanded_op = expanded_list["ops"][0]
+    assert expanded_op["range"] == [0, 9] and len(set(expanded_op["room_ids"])) == 10, expanded_op
+    new_rooms = set(expanded_op["room_ids"]) - set(first_list["ops"][0]["room_ids"])
+    assert len(new_rooms) == 7 and all(expanded["rooms"][r]["initial"] for r in new_rooms), expanded
+    unchanged = room_list(9, expanded["pos"])
+    assert unchanged["lists"]["all_rooms"] == {"count": len(rooms)}, unchanged
+    assert not unchanged.get("rooms"), unchanged
+
     other_room = request("createRoom", {}, token="other-access")["room_id"]
     token = request("sync?timeout=0")["next_batch"]
     # Unrelated room traffic advances curr_sn past token; to_device still arrives fast.
@@ -197,7 +227,6 @@ VALUES ('@fixture:fixture.test', 'FIXTURE', 'fixture-access', 0),
             if event["type"] == "m.room.name"] == ["before"], synced
     request(f"rooms/{room}/leave", {})
 
-    sliding_path = "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync"
     room = invited_room()
     subscription = {"conn_id": "invite-join", "room_subscriptions": {room: {
         "timeline_limit": 0, "required_state": [["m.room.member", "$ME"], ["m.room.name", ""]],
@@ -230,7 +259,6 @@ VALUES ('@fixture:fixture.test', 'FIXTURE', 'fixture-access', 0),
     # its next SAS key, even though e2ee is enabled on that connection.
     for _ in range(390):
         rooms.append(request("createRoom", {})["room_id"])
-    sliding_path = "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync"
     encryption_body = {"conn_id": "encryption", "extensions": {
         "e2ee": {"enabled": True}, "to_device": {"enabled": True},
     }}
@@ -289,7 +317,7 @@ VALUES ('@fixture:fixture.test', 'FIXTURE', 'fixture-access', 0),
     cleared_room = cleared["rooms"]["join"][target_room]
     assert cleared_room.get("unread_thread_notifications", {}).get(root["event_id"], {}).get(
         "notification_count", 0) == 0, cleared
-    print(f"PASS: invite/join boundaries, required-state-only sync, idle key counts, incremental events, "
+    print(f"PASS: idle room-list growth, invite/join boundaries, required-state-only sync, idle key counts, incremental events, "
           f"405-room encryption sync ({elapsed:.3f}s), and thread-count idle sync ({thread_elapsed:.3f}s)")
 except Exception:
     subprocess.run(["docker", "logs", server, "--tail", "60"])
