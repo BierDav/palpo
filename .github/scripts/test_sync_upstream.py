@@ -23,13 +23,14 @@ class SyncUpstreamTests(unittest.TestCase):
         self.write(self.upstream, "source.txt", "base\n")
         self.commit(self.upstream, "upstream base")
         self.base = self.git(self.upstream, "rev-parse", "HEAD").strip()
-        self.git(self.upstream, "tag", "v0.6.0")
+        self.git(self.upstream, "tag", "v0.5.0")
         self.git(self.root, "clone", "--bare", str(self.upstream), str(self.origin))
+        self.git(self.upstream, "tag", "v0.6.0")
         self.git(self.root, "clone", str(self.origin), str(self.fork))
         self.identity(self.fork)
         self.git(self.fork, "checkout", "-b", "patched")
         self.write(self.fork, ".custom-upstream-revision", self.base + "\n")
-        self.write(self.fork, ".custom-upstream-tag", "v0.6.0\n")
+        self.write(self.fork, ".custom-upstream-tag", "v0.5.0\n")
         self.commit(self.fork, "record custom upstream")
         # Mixed source/CI commits broke the former path-filtered cherry-picks.
         self.write(self.fork, "custom.txt", "retained custom code\n")
@@ -103,6 +104,20 @@ class SyncUpstreamTests(unittest.TestCase):
         self.run_sync()
         self.assertEqual(self.remote_head(), self.custom)
         self.assertFalse((self.root / "dispatch").exists())
+
+    def test_sync_records_release_version_when_origin_rejects_upstream_tags(self):
+        hook = self.origin / "hooks/pre-receive"
+        hook.write_text('#!/bin/sh\nwhile read -r old new ref; do\n'
+                        '  case "$ref" in refs/tags/v*) exit 1;; esac\n'
+                        'done\n')
+        hook.chmod(0o755)
+        latest = self.advance()
+        self.run_sync()
+        tip = self.remote_head()
+        self.git(self.fork, "merge-base", "--is-ancestor", latest, tip)
+        self.assertEqual(self.git(self.fork, "show", f"{tip}:.custom-upstream-tag"),
+                         "v0.6.0\n")
+        self.assertIn("release_tag=0.6.0-custom.1", (self.root / "dispatch").read_text())
 
     def test_conflict_aborts_without_pushing_or_dispatching(self):
         self.write(self.fork, "source.txt", "custom conflicting edit\n")

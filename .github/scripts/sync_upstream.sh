@@ -5,7 +5,7 @@ set -euo pipefail
 git fetch origin patched
 git checkout --detach origin/patched
 current_revision="$(tr -d '[:space:]' < .custom-upstream-revision)"
-git fetch https://github.com/palpo-im/palpo.git main
+git fetch --no-tags https://github.com/palpo-im/palpo.git main
 latest_revision="$(git rev-parse FETCH_HEAD)"
 echo "Current upstream base: ${current_revision}; upstream main: ${latest_revision}"
 
@@ -14,8 +14,8 @@ if [[ "${latest_revision}" == "${current_revision}" ]]; then
   exit 0
 fi
 
+# The release tag is version metadata; the fork only publishes custom tags.
 latest_tag="$(gh api repos/palpo-im/palpo/releases/latest --jq '.tag_name')"
-git fetch https://github.com/palpo-im/palpo.git "refs/tags/${latest_tag}:refs/tags/${latest_tag}"
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -49,7 +49,6 @@ while IFS= read -r tag; do
 done < <(git tag -l "${base_ver}-custom.*")
 release_tag="${base_ver}-custom.$((max_n + 1))"
 
-git push origin "refs/tags/${latest_tag}"
 # A concurrent fork update must reject this push, never overwrite that update.
 git push origin HEAD:patched
 gh workflow run -R "${GITHUB_REPOSITORY}" custom-release.yml --ref patched -f "release_tag=${release_tag}"
