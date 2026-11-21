@@ -245,7 +245,13 @@ pub(crate) async fn join_sn_for_event(
             super::state::get_field_id(&StateEventType::RoomMember, user_id.as_str()).await?;
         // Only this member's before-state proves the joined period. Other
         // imported state fields can legitimately have unavailable history.
-        let layers = super::state::load_frame_info(frame_id).await?;
+        let layers = match super::state::load_frame_info(frame_id).await {
+            Ok(layers) => layers,
+            // A historical frame can be referenced before its delta is available.
+            // Like a missing member event, it cannot prove an earlier join.
+            Err(error) if error.is_not_found() => return Ok(event_sn),
+            Err(error) => return Err(error),
+        };
         let before = layers
             .last()
             .ok_or_else(|| AppError::internal("membership before-state has no layers"))?;
