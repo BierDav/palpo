@@ -18,7 +18,7 @@ pub(super) async fn list_tags(
     depot: &mut Depot,
 ) -> JsonResult<TagsResBody> {
     let authed = depot.authed_info()?;
-    if authed.user_id() != &args.user_id {
+    if authed.user_id() != args.user_id {
         return Err(MatrixError::forbidden("Cannot access another user's room tags.", None).into());
     }
 
@@ -47,7 +47,7 @@ pub(super) async fn upsert_tag(
     depot: &mut Depot,
 ) -> EmptyResult {
     let authed = depot.authed_info()?;
-    if authed.user_id() != &args.user_id {
+    if authed.user_id() != args.user_id {
         return Err(MatrixError::forbidden("Cannot access another user's room tags.", None).into());
     }
 
@@ -84,7 +84,7 @@ pub(super) async fn delete_tag(
     depot: &mut Depot,
 ) -> EmptyResult {
     let authed = depot.authed_info()?;
-    if authed.user_id() != &args.user_id {
+    if authed.user_id() != args.user_id {
         return Err(MatrixError::forbidden("Cannot access another user's room tags.", None).into());
     }
 
