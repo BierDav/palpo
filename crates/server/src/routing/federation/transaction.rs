@@ -677,7 +677,13 @@ mod device_version_tests {
         use crate::room::state::{CompressedEvent, CompressedState};
 
         let mut state = CompressedState::new();
-        let mut saved = Vec::new();
+        let mut frame = crate::room::state::save_state(room, std::sync::Arc::new(state.clone()))
+            .await
+            .unwrap()
+            .frame_id;
+        crate::room::state::set_room_state(room, frame)
+            .await
+            .unwrap();
         for user in users {
             let sn = crate::data::next_sn().await.unwrap();
             let pdu: crate::event::PduEvent = serde_json::from_value(json!({
@@ -710,6 +716,7 @@ mod device_version_tests {
                     event_points::event_id.eq(&pdu.event_id),
                     event_points::event_sn.eq(sn),
                     event_points::room_id.eq(room),
+                    event_points::before_frame_id.eq(Some(frame)),
                 ))
                 .execute(&mut conn)
                 .await
@@ -728,24 +735,20 @@ mod device_version_tests {
                 .await
                 .unwrap();
             state.insert(CompressedEvent::new(field, sn));
-            saved.push((pdu.event_id, sn));
-        }
-        let frame = crate::room::state::save_state(room, std::sync::Arc::new(state))
-            .await
-            .unwrap()
-            .frame_id;
-        crate::room::state::set_room_state(room, frame)
-            .await
-            .unwrap();
-        let mut conn = crate::data::connect();
-        for (id, sn) in saved {
-            diesel::update(event_points::table.find(id))
+            frame = crate::room::state::save_state(room, std::sync::Arc::new(state.clone()))
+                .await
+                .unwrap()
+                .frame_id;
+            crate::room::state::set_room_state(room, frame)
+                .await
+                .unwrap();
+            diesel::update(event_points::table.find(pdu.event_id))
                 .set((
                     event_points::frame_id.eq(Some(frame)),
                     event_points::live_published_sn.eq(Some(sn)),
                     event_points::live_published_frame_id.eq(Some(frame)),
                 ))
-                .execute(&mut conn)
+                .execute(&mut crate::data::db())
                 .await
                 .unwrap();
         }

@@ -1,0 +1,53 @@
+diff --git a/tests/federation_sync_test.go b/tests/federation_sync_test.go
+index 44ab13b..d0ce327 100644
+--- a/tests/federation_sync_test.go
++++ b/tests/federation_sync_test.go
+@@ -15,8 +15,6 @@ import (
+ 	"github.com/matrix-org/complement/client"
+ 	"github.com/matrix-org/complement/federation"
+ 	"github.com/matrix-org/complement/helpers"
+-	"github.com/matrix-org/complement/match"
+-	"github.com/matrix-org/complement/must"
+ 	"github.com/matrix-org/complement/runtime"
+ 	"github.com/matrix-org/gomatrixserverlib/spec"
+ 	"github.com/tidwall/gjson"
+@@ -116,14 +114,29 @@ func TestSyncOmitsStateChangeOnFilteredEvents(t *testing.T) {
+ 			}
+ 		}`,
+ 	})
+-	must.MatchGJSON(t, res, match.JSONCheckOff(
+-		// look in this array
+-		fmt.Sprintf("rooms.join.%s.state.events", client.GjsonEscape(serverRoom.RoomID)),
+-		// for these items
+-		[]interface{}{s2.EventID()},
+-		// and map them first into this format
+-		match.CheckOffMapper(func(r gjson.Result) interface{} {
+-			return r.Get("event_id").Str
+-		}), match.CheckOffAllowUnwanted(),
+-	))
++	joined := res.Get(fmt.Sprintf("rooms.join.%s", client.GjsonEscape(serverRoom.RoomID)))
++	// A late event can itself be the returned timeline event when the server
++	// orders by publication. Apply the state block and then the timeline.
++	if got := effectiveRoomNameEvent(joined); got != s2.EventID() {
++		t.Fatalf("expected room name event %s after applying sync, got %q: %s", s2.EventID(), got, joined.Raw)
++	}
++	for _, event := range joined.Get("timeline.events").Array() {
++		if event.Get("type").Str == "please_filter_me" {
++			t.Fatalf("filtered event was returned in the timeline: %s", event.Raw)
++		}
++	}
++}
++
++// The timeline is applied after the state block and can replace the room name.
++func effectiveRoomNameEvent(joined gjson.Result) string {
++	var id string
++	for _, section := range []string{"state.events", "timeline.events"} {
++		for _, event := range joined.Get(section).Array() {
++			key := event.Get("state_key")
++			if event.Get("type").Str == "m.room.name" && key.Type == gjson.String && key.Str == "" {
++				id = event.Get("event_id").Str
++			}
++		}
++	}
++	return id
+ }

@@ -44,6 +44,15 @@ These tests run before the image build and again in the full suite. The
 required-case manifest enforces both the helper tests and the original room
 publication assertion.
 
+## sync-filtered-room-name.patch
+
+`TestSyncOmitsStateChangeOnFilteredEvents` expects the late room name in
+`state.events`. Palpo can send it in the limited timeline instead, with the
+state block describing the room just before that event. The fixture applies
+both sections in client order and still requires the exact room-name event
+and the absence of the filtered event from the timeline. Only the full
+Complement job runs this case; it is not part of the mixed-federation list.
+
 ## registration-uiaa.patch
 
 - Complete an advertised dummy-only UIAA registration flow with the issued

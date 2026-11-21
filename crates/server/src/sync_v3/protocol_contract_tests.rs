@@ -159,8 +159,13 @@ async fn contract() {
     let room = created["room_id"].as_str().unwrap();
     let room_id: OwnedRoomId = room.try_into().unwrap();
     let initial = sync(&service, None, json!({}), false).await;
-    let initial_state = events(&initial, room, "state");
-    assert!(!initial_state.is_empty());
+    // The state before the timeline is empty when it starts with room creation.
+    assert!(
+        events(&initial, room, "state")
+            .into_iter()
+            .chain(events(&initial, room, "timeline"))
+            .any(|event| event["type"] == "m.room.create")
+    );
     let since = initial["next_batch"].as_str().unwrap();
     // The idle-token early return and unchanged-frame paths must both respect full_state.
     let full = sync(&service, Some(since), json!({}), true).await;

@@ -280,6 +280,36 @@ VALUES ('@fixture:fixture.test', 'FIXTURE', 'fixture-access', 0),
                for event in response["extensions"]["to_device"]["events"]), response
     assert "@other:fixture.test" in response["extensions"]["e2ee"]["device_lists"]["changed"], response
 
+    # A published profile update can point at a historical frame with no delta.
+    # Retrying the same encryption cursor must still advance and refresh the peer.
+    encryption_body["extensions"]["to_device"]["since"] = response["extensions"]["to_device"]["next_batch"]
+    profile = request(f"rooms/{target_room}/state/m.room.member/@other:fixture.test",
+                      {"membership": "join", "displayname": "Updated"}, method="PUT", token="other-access")
+    profile_id = profile["event_id"]
+
+    def fixture_sql(query):
+        return docker("exec", "-i", database, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1",
+                      "-U", "postgres", "-d", "palpo", data=query)
+
+    before_frame = int(fixture_sql(f"SELECT before_frame_id FROM event_points WHERE event_id='{profile_id}';"))
+    fixture_sql(f"""
+WITH incomplete AS (
+    INSERT INTO room_state_frames (room_id, hash_data)
+    VALUES ('{target_room}', convert_to('fixture-incomplete-history', 'UTF8')) RETURNING id
+)
+UPDATE event_points SET before_frame_id=incomplete.id FROM incomplete WHERE event_id='{profile_id}';
+""")
+    replay_path = sliding_path + "?timeout=0&pos=" + response["pos"]
+    partial = request(replay_path, encryption_body)
+    assert int(partial["pos"]) > int(response["pos"]), partial
+    device_lists = partial["extensions"]["e2ee"]["device_lists"]
+    assert device_lists["changed"] == ["@other:fixture.test"] and not device_lists.get("left"), partial
+
+    # Once history is available, the same window proves continuous membership.
+    fixture_sql(f"UPDATE event_points SET before_frame_id={before_frame} WHERE event_id='{profile_id}';")
+    recovered = request(replay_path, encryption_body)
+    assert not recovered["extensions"]["e2ee"].get("device_lists"), recovered
+
     # Element Web's stored filter requests per-thread counts. Unchanged rooms
     # must still be skipped, while thread count changes reach the client.
     element_filter = urllib.parse.quote(json.dumps({"room": {
@@ -318,7 +348,8 @@ VALUES ('@fixture:fixture.test', 'FIXTURE', 'fixture-access', 0),
     assert cleared_room.get("unread_thread_notifications", {}).get(root["event_id"], {}).get(
         "notification_count", 0) == 0, cleared
     print(f"PASS: idle room-list growth, invite/join boundaries, required-state-only sync, idle key counts, incremental events, "
-          f"405-room encryption sync ({elapsed:.3f}s), and thread-count idle sync ({thread_elapsed:.3f}s)")
+          f"405-room encryption sync ({elapsed:.3f}s), missing join history, "
+          f"and thread-count idle sync ({thread_elapsed:.3f}s)")
 except Exception:
     subprocess.run(["docker", "logs", server, "--tail", "60"])
     raise
