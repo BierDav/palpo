@@ -188,6 +188,8 @@ jobs:
           git -C /tmp/complement apply "$GITHUB_WORKSPACE/tests/complement/patches/public-rooms-pagination.patch"
           git -C /tmp/complement apply --check "$GITHUB_WORKSPACE/tests/complement/patches/device-list-query-keys.patch"
           git -C /tmp/complement apply "$GITHUB_WORKSPACE/tests/complement/patches/device-list-query-keys.patch"
+          git -C /tmp/complement apply --check "$GITHUB_WORKSPACE/tests/complement/patches/sync-filtered-room-name.patch"
+          git -C /tmp/complement apply "$GITHUB_WORKSPACE/tests/complement/patches/sync-filtered-room-name.patch"
           cp tests/complement/overlays/public_rooms_pagination_test.go /tmp/complement/tests/csapi/
           cd /tmp/complement
           go test ./internal/instruction -count=1

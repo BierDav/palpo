@@ -101,8 +101,7 @@ fn own_membership(events: &Value) -> Option<&str> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|event| event["type"] == "m.room.member" && event["state_key"] == ALICE)
-        .last()
+        .rfind(|event| event["type"] == "m.room.member" && event["state_key"] == ALICE)
         .and_then(|event| event["content"]["membership"].as_str())
 }
 
