@@ -1505,6 +1505,7 @@ async fn load_left_room(
             transaction_device: None,
             transaction_endpoint: None,
             thread_participants: Default::default(),
+            thread_latest: None,
         };
         return Ok(LeftRoom {
             account_data: RoomAccountData::default(),
@@ -1681,6 +1682,7 @@ async fn load_sticky(
             pdu.remove_sender_only_unsigned()?;
         }
         pdu.add_unsigned_membership(user_id).await?;
+        pdu.load_thread_summary_for(user_id).await;
         pdu.add_age()?;
         events.push(
             crate::event::sticky::with_ttl(pdu, entry.expires_at, now)

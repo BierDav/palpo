@@ -84,3 +84,10 @@ can still send a count-only reply for an unchanged, acknowledged window.
 The custom release fixture tests the growing window over HTTP without
 advancing the event cursor. Room ordering uses one indexed event lookup per
 candidate room to keep the idle comparison cheap.
+
+On 2026-11-23 the fork merged upstream `50511ee0` (sliding-sync membership,
+invitation and lazy-member changes #701–#706). The one conflict was the idle-room
+skip in `sync_v5::process_rooms`: upstream's version is kept, together with the
+custom read-count check that still sends a room whose unread counts changed
+without new events. All `database_` tests of the server crate and the sliding
+sync `review_` tests pass on the merge.
