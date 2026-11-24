@@ -1,9 +1,37 @@
 # Custom fork
 
-`BierDav/palpo` builds the `patched` branch for `quickme.at`. The upstream base
-is pinned by `.custom-upstream-revision`; `.custom-upstream-tag` supplies the
-release version used in custom image tags. These have different purposes:
-the fork now follows upstream `main`, rather than the latest stable tag.
+`BierDav/palpo` builds the `patched` branch for `quickme.at`. The fork follows
+upstream `main`, rather than the latest stable tag. Its patches are listed in
+`.fork-kit.toml`. Custom image tags use the newest upstream release tag in the
+merged history (`<version>-custom.<n>`), which `custom-release.yml` reads from
+git.
+
+## Keeping up with upstream
+
+Since 2026-11-24, [fork-kit](https://github.com/BierDav/fork-kit)
+(`.github/workflows/fork-kit.yml`) replaces the scheduled sync script. Every
+six hours it merges upstream `main` into `fork-kit/sync` and keeps one pull
+request into `patched` open for it.
+
+- **Clean merge, required checks green, no upstream `.github/` changes:** the
+  PR merges itself. The push to `patched` releases, and Renovate deploys the
+  tested digest as before. The required checks are:
+  - `Rustfmt and Clippy`;
+  - `Cargo check stable - x86_64-unknown-linux-gnu`, which includes the fork's
+    database regressions;
+  - `Complement`;
+  - `Build & test (amd64)` and `Build & test (arm64)`, which run
+    `tests/custom_idle_sync.py`.
+- **Conflicts:** the PR is labelled `fork-kit:conflict` and names the patches
+  involved. Resolve them on `fork-kit/sync` as described under "Future
+  conflicts" in the platform's `docs/palpo-upstream-sync.md`, then merge the PR.
+- **Upstream changed `.github/`:** nothing is pushed until someone has reviewed
+  the change and run the fork-kit workflow with `allow-workflow-changes`.
+- **Keeping a PR from merging itself:** add the label `fork-kit:hold`.
+
+`quality-control.yml` and `complement.yml` run only when a PR touches Rust,
+Cargo or test files. An upstream change touching none of those leaves the sync
+PR waiting until the next upstream change that does.
 
 On 2026-11-16 the fork moved to upstream
 `a7b0f48bf8d2ec140dd408266b9657df9f13525c`.
@@ -21,11 +49,9 @@ On 2026-11-16 the fork moved to upstream
   the position of the old message it reads. Sliding sync delivers the new
   counts even when receipts are disabled and there are no timeline changes.
 
-The scheduled upstream sync records each new base revision and merges upstream
-into the complete fork history without rewriting it. Conflicts abort the merge
-and stop the workflow with a job summary;
-the fork's GitHub issues are disabled. Custom release notes use the pinned
-revision so upstream history is not listed as custom patches.
+Upstream is merged into the complete fork history without rewriting it.
+Custom release notes start at the merged upstream revision, so upstream history
+is not listed as custom patches.
 
 The isolated HTTP regressions for room preferences and invite delivery are
 registered in default/all-feature database CI. The custom Docker fixture also
@@ -54,13 +80,9 @@ newest publication through `(room_id, live_published_sn DESC)` and falls back to
 the full scan only if that row is not accepted. Production data gave the same
 567 rows in about 9 ms instead of about 220 ms.
 
-The sync script preserves mixed source/CI commits through normal merges and
-uses a fast-forward push, so concurrent fork updates cannot be overwritten.
-Its disposable-repository tests cover preserved custom history, a no-op sync,
-conflict cleanup and a competing writer. Changes to the sync workflow/script
-run these checks and the sync immediately; ordinary custom commits still use
-the custom release workflow. Both release architectures must pass the existing
-HTTP Docker fixture before publishing an image.
+Both release architectures must pass the existing HTTP Docker fixture before
+publishing an image; the same fixture runs on every pull request into
+`patched`.
 
 Device-list tracking (`device_lists::changes`, shared by classic sync, sliding
 sync and `/keys/changes`) no longer walks every room the user was ever in. It

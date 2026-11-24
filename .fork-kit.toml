@@ -1,0 +1,84 @@
+# fork-kit (https://github.com/BierDav/fork-kit) keeps this fork merged with
+# upstream main through one sync pull request. See docs/custom-fork.md.
+
+[upstream]
+url = "https://github.com/palpo-im/palpo.git"
+track = "branch:main"
+
+[fork]
+branch = "patched"
+
+[ledger]
+ignore = [".github/**", "docs/custom-fork.md", "Dockerfile.custom"]
+
+[[patch]]
+id = "room-tags"
+summary = "Room tags at /user/{user_id}/rooms/{room_id}/tags with flat PUT bodies and path-user authorization"
+paths = [
+  "crates/core/src/client/tag.rs",
+  "crates/server/src/routing/client/user/tag.rs",
+  "crates/server/src/routing/client/room/tag.rs",
+  "crates/server/src/routing/client/room.rs",
+  "crates/server/src/routing/client/user.rs",
+  "crates/server/src/routing/client/user/room_preferences_tests.rs",
+]
+tests = ["room_preferences_tests", "tests/custom_idle_sync.py"]
+
+[[patch]]
+id = "unread-counts"
+summary = "Read counts from the receipt's stream position; push summaries advance the per-room notification cursor"
+paths = [
+  "crates/data/src/room/receipt.rs",
+  "crates/server/src/room/push_action.rs",
+  "crates/server/src/room/user.rs",
+  "crates/server/src/sync_v3.rs",
+  "crates/server/src/sync_v3/thread_notification_tests.rs",
+]
+tests = ["thread_notification_tests", "tests/custom_idle_sync.py"]
+
+[[patch]]
+id = "invite-join-state"
+summary = "Deliver invite-to-join state without timeline events"
+paths = ["crates/server/src/room/timeline.rs", "crates/server/src/sync_v3.rs", "crates/server/src/sync_v3/invite_join_tests.rs"]
+tests = ["invite_join_tests"]
+
+[[patch]]
+id = "sync-wakeups"
+summary = "Prompt local sync wakeups and independent to-device acknowledgements (verification latency)"
+paths = [
+  "crates/data/src/lib.rs",
+  "crates/data/src/sync_watch.rs",
+  "crates/data/src/room/transaction_id.rs",
+  "crates/data/src/room/typing.rs",
+  "crates/data/src/user/device.rs",
+  "crates/server/src/watcher.rs",
+  "crates/server/src/routing/federation/transaction.rs",
+]
+
+[[patch]]
+id = "device-lists-batching"
+summary = "One LATERAL query for device-list frames and a cache of decoded memberships"
+paths = ["crates/server/src/user/device_lists.rs", "crates/server/src/user/device_lists/**"]
+tests = ["batch_tests"]
+
+[[patch]]
+id = "sliding-sync-idle-window"
+summary = "Send new list positions and room data when a client grows its room list during an idle poll"
+paths = ["crates/server/src/sync_v5.rs", "crates/server/src/routing/client/sync_msc4186.rs"]
+tests = ["tests/custom_idle_sync.py"]
+
+[[patch]]
+id = "sync-v3-review"
+summary = "Classic sync: skip unchanged rooms under thread-count filters; activity and resource review tests"
+paths = [
+  "crates/server/src/sync_v3.rs",
+  "crates/server/src/routing/client/sync_v3.rs",
+  "crates/server/src/sync_v3/activity_review_tests.rs",
+  "crates/server/src/sync_v3/protocol_contract_tests.rs",
+  "crates/server/src/sync_v3/resource_review_tests.rs",
+]
+
+[[patch]]
+id = "regression-suite"
+summary = "The fork's HTTP and Complement regressions"
+paths = ["tests/custom_idle_sync.py", "tests/README.md", "tests/complement/patches/**"]
