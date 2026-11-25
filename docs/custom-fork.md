@@ -125,3 +125,11 @@ transactions and user and alias queries carried the token only as the
 `access_token` query parameter, which mautrix bridges reject with 401.
 `appservice::send_request` now attaches both the header and the legacy query
 parameter, so no call site can omit either.
+
+The room-alias query to appservices went through the same function only in
+part. `get_alias_response` posted to the appservice with no credentials at all,
+and the shared query sent `POST {url}/_matrix/app/v1/rooms/#alias`, whose `#`
+started a URL fragment, and treated the spec's `{}` reply as a failure. Both
+callers now use `resolve_appservice_alias`, which sends `GET` with the alias
+percent-encoded in the path through `appservice::send_request` and accepts
+the alias on HTTP 200.
