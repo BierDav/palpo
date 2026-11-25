@@ -85,8 +85,13 @@ paths = [
   "crates/server/src/appservice.rs",
   "crates/server/src/routing/client/appservice.rs",
   "crates/server/src/routing/client/third_party.rs",
+  "crates/core/src/appservice/query.rs",
+  "crates/server/src/room/alias.rs",
 ]
-tests = ["every_appservice_request_carries_the_bearer_header_and_legacy_query_token"]
+tests = [
+  "every_appservice_request_carries_the_bearer_header_and_legacy_query_token",
+  "room_alias_query_is_a_get_with_the_alias_in_the_path",
+]
 
 [[patch]]
 id = "regression-suite"

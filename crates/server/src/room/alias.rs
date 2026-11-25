@@ -83,14 +83,10 @@ async fn resolve_appservice_alias(room_alias: &RoomAliasId) -> AppResult<OwnedRo
             )?
             .into_inner();
 
-            match crate::sending::send_appservice_request::<Option<()>>(
-                appservice.registration.clone(),
-                request,
-            )
-            .await
-            {
-                Ok(Some(_)) => {
-                    // Appservice acknowledged the alias, try resolving locally now
+            // The appservice answers 200 only after it has created the alias;
+            // any other status means it does not claim it.
+            match crate::appservice::send_request(appservice.registration.clone(), request).await {
+                Ok(response) if response.status() == reqwest::StatusCode::OK => {
                     match resolve_local_alias(room_alias).await {
                         Ok(room_id) => return Ok(room_id),
                         Err(e) => {
@@ -101,10 +97,12 @@ async fn resolve_appservice_alias(room_alias: &RoomAliasId) -> AppResult<OwnedRo
                         }
                     }
                 }
-                Ok(None) => {
+                Ok(response) => {
                     debug!(
-                        "Appservice {} did not claim alias {}",
-                        appservice.registration.id, room_alias
+                        "Appservice {} did not claim alias {} (HTTP {})",
+                        appservice.registration.id,
+                        room_alias,
+                        response.status()
                     );
                 }
                 Err(e) => {
@@ -271,27 +269,9 @@ pub async fn get_alias_response(room_alias: OwnedRoomAliasId) -> AppResult<Alias
         return Ok(body);
     }
 
-    let mut room_id = None;
-    match resolve_local_alias(&room_alias).await {
-        Ok(r) => room_id = Some(r),
-        Err(_) => {
-            for appservice in crate::appservice::all().await?.values() {
-                let url = appservice
-                    .registration
-                    .build_url(&format!("app/v1/rooms/{room_alias}"))?;
-                if appservice.aliases.is_match(room_alias.as_str())
-                    && matches!(
-                        crate::sending::post(url).send::<Option<()>>().await,
-                        Ok(Some(_opt_result))
-                    )
-                {
-                    room_id = Some(resolve_local_alias(&room_alias).await.map_err(|_| {
-                        AppError::public("Appservice lied to us. Room does not exist.")
-                    })?);
-                    break;
-                }
-            }
-        }
+    let room_id = match resolve_local_alias(&room_alias).await {
+        Ok(room_id) => Some(room_id),
+        Err(_) => resolve_appservice_alias(&room_alias).await.ok(),
     };
 
     let room_id = match room_id {
