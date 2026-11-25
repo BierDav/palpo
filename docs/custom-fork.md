@@ -9,8 +9,8 @@ git.
 ## Keeping up with upstream
 
 Since 2026-11-24, [fork-kit](https://github.com/BierDav/fork-kit)
-(`.github/workflows/fork-kit.yml`) replaces the scheduled sync script. Every
-six hours it merges upstream `main` into `fork-kit/sync` and keeps one pull
+replaces the scheduled sync script; BierDav/fork-kit's central `sync-forks.yml` runs it. Every
+two hours it merges upstream `main` into `fork-kit/sync` and keeps one pull
 request into `patched` open for it.
 
 - **Clean merge, required checks green, no upstream `.github/` changes:** the
@@ -27,7 +27,8 @@ request into `patched` open for it.
   involved. Resolve them on `fork-kit/sync` as described under "Future
   conflicts" in the platform's `docs/palpo-upstream-sync.md`, then merge the PR.
 - **Upstream changed `.github/`:** nothing is pushed until someone has reviewed
-  the change and run the fork-kit workflow with `allow-workflow-changes`.
+  the change and run `sync-forks.yml` in BierDav/fork-kit with this repository and
+  `allow-workflow-changes`.
 - **Holding a PR:** add the label `fork-kit:hold` to any PR into `patched`.
   The required check `fork-kit/hold` then fails and auto-merge goes off, so the
   PR cannot merge until the label is removed; the next fork-kit run turns
