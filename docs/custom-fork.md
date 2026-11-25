@@ -113,3 +113,11 @@ skip in `sync_v5::process_rooms`: upstream's version is kept, together with the
 custom read-count check that still sends a room whose unread counts changed
 without new events. All `database_` tests of the server crate and the sliding
 sync `review_` tests pass on the merge.
+
+On 2026-11-25 every homeserver-to-appservice request started carrying the
+`Authorization: Bearer <hs_token>` header that appservice API v1.4 requires.
+Upstream sent it only on the ping (#720) and the third-party lookups; event
+transactions and user and alias queries carried the token only as the
+`access_token` query parameter, which mautrix bridges reject with 401.
+`appservice::send_request` now attaches both the header and the legacy query
+parameter, so no call site can omit either.

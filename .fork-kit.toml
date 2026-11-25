@@ -79,6 +79,16 @@ paths = [
 ]
 
 [[patch]]
+id = "appservice-authorization"
+summary = "Every homeserver-to-appservice request carries the Authorization: Bearer hs_token header"
+paths = [
+  "crates/server/src/appservice.rs",
+  "crates/server/src/routing/client/appservice.rs",
+  "crates/server/src/routing/client/third_party.rs",
+]
+tests = ["every_appservice_request_carries_the_bearer_header_and_legacy_query_token"]
+
+[[patch]]
 id = "regression-suite"
 summary = "The fork's HTTP and Complement regressions"
 paths = ["tests/custom_idle_sync.py", "tests/README.md", "tests/complement/patches/**"]

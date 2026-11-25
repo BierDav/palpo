@@ -29,23 +29,15 @@ fn appservice_get_request(base_url: &str, path: &str) -> Result<reqwest::Request
     Ok(reqwest::Request::new(reqwest::Method::GET, url))
 }
 
-/// These requests carry the destination AS's credentials, never the client's.
-/// Keep the legacy query token added by send_request for older bridges, while
-/// providing the Bearer header required since AS specification v1.4.
+/// These requests carry the destination AS's credentials, never the client's;
+/// send_request attaches them.
 async fn query<T>(
     registration: crate::core::appservice::Registration,
-    mut request: reqwest::Request,
+    request: reqwest::Request,
 ) -> AppResult<T>
 where
     T: serde::de::DeserializeOwned,
 {
-    let mut authorization =
-        reqwest::header::HeaderValue::from_str(&format!("Bearer {}", registration.hs_token))
-            .map_err(|_| AppError::public("Invalid application-service credential"))?;
-    authorization.set_sensitive(true);
-    request
-        .headers_mut()
-        .insert(reqwest::header::AUTHORIZATION, authorization);
     let response = crate::appservice::send_request(registration, request).await?;
     // A failing peer can return a syntactically valid success-shaped body.
     // Status must be accepted before that body contributes discovery results.
