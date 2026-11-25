@@ -22,12 +22,16 @@ request into `patched` open for it.
   - `Complement`;
   - `Build & test (amd64)` and `Build & test (arm64)`, which run
     `tests/custom_idle_sync.py`.
+  - `fork-kit/hold`, which fails while a PR has the `fork-kit:hold` label.
 - **Conflicts:** the PR is labelled `fork-kit:conflict` and names the patches
   involved. Resolve them on `fork-kit/sync` as described under "Future
   conflicts" in the platform's `docs/palpo-upstream-sync.md`, then merge the PR.
 - **Upstream changed `.github/`:** nothing is pushed until someone has reviewed
   the change and run the fork-kit workflow with `allow-workflow-changes`.
-- **Keeping a PR from merging itself:** add the label `fork-kit:hold`.
+- **Holding a PR:** add the label `fork-kit:hold` to any PR into `patched`.
+  The required check `fork-kit/hold` then fails and auto-merge goes off, so the
+  PR cannot merge until the label is removed; the next fork-kit run turns
+  auto-merge back on for a sync PR. It holds that PR only, not releases.
 
 `quality-control.yml` and `complement.yml` run only when a PR touches Rust,
 Cargo or test files. An upstream change touching none of those leaves the sync
