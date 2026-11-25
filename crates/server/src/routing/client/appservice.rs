@@ -4,7 +4,7 @@ use serde_json::Map;
 
 use crate::core::OwnedTransactionId;
 use crate::core::appservice::ping::{SendPingReqBody, SendPingResBody, send_ping_request};
-use crate::{AppError, AuthArgs, DepotExt, JsonResult, MatrixError, json_ok};
+use crate::{AuthArgs, DepotExt, JsonResult, MatrixError, json_ok};
 
 pub fn authed_router() -> Router {
     Router::with_path("appservice/{appservice_id}/ping").post(ping)
@@ -48,14 +48,7 @@ async fn ping(
     };
 
     let timer = tokio::time::Instant::now();
-    let mut request = send_ping_request(url, body.into_inner())?.into_inner();
-    let mut authorization =
-        reqwest::header::HeaderValue::from_str(&format!("Bearer {}", registration.hs_token))
-            .map_err(|_| AppError::public("Invalid application-service credential"))?;
-    authorization.set_sensitive(true);
-    request
-        .headers_mut()
-        .insert(reqwest::header::AUTHORIZATION, authorization);
+    let request = send_ping_request(url, body.into_inner())?.into_inner();
     let status = crate::appservice::send_request(registration.clone(), request)
         .await?
         .status();

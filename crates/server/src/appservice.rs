@@ -316,21 +316,7 @@ pub(crate) async fn send_request(
         }
     };
 
-    let hs_token = registration.hs_token.as_str();
-
-    // let mut http_request = request
-    //     .try_into_http_request::<BytesMut>(
-    //         &destination,
-    //         SendAccessToken::IfRequired(hs_token),
-    //         &[MatrixVersion::V1_0],
-    //     )
-    //     .unwrap()
-    //     .map(|body| body.freeze());
-
-    request
-        .url_mut()
-        .query_pairs_mut()
-        .append_pair("access_token", hs_token);
+    authorize_request(&mut request, &registration.hs_token)?;
 
     // let mut reqwest_request = reqwest::Request::try_from(http_request)?;
 
@@ -381,6 +367,26 @@ pub(crate) async fn send_request(
     Ok(response)
 }
 
+/// Attaches the homeserver token to a request for an appservice.
+///
+/// Appservice API v1.4 and later require the `Authorization: Bearer` header,
+/// which current bridges (mautrix among them) read exclusively. The legacy
+/// `access_token` query parameter is kept for older appservices.
+fn authorize_request(request: &mut reqwest::Request, hs_token: &str) -> AppResult<()> {
+    let mut authorization =
+        reqwest::header::HeaderValue::from_str(&format!("Bearer {hs_token}"))
+            .map_err(|_| AppError::public("Invalid application-service credential"))?;
+    authorization.set_sensitive(true);
+    request
+        .headers_mut()
+        .insert(reqwest::header::AUTHORIZATION, authorization);
+    request
+        .url_mut()
+        .query_pairs_mut()
+        .append_pair("access_token", hs_token);
+    Ok(())
+}
+
 fn redacted_access_token_url(url: &url::Url) -> url::Url {
     let mut redacted = url.clone();
     let Some(_) = redacted.query() else {
@@ -410,7 +416,51 @@ fn redacted_access_token_url(url: &url::Url) -> url::Url {
 
 #[cfg(test)]
 mod tests {
-    use super::{redacted_access_token_url, validate_appservice_url};
+    use super::{authorize_request, redacted_access_token_url, validate_appservice_url};
+
+    #[test]
+    fn every_appservice_request_carries_the_bearer_header_and_legacy_query_token() {
+        let mut request = reqwest::Request::new(
+            reqwest::Method::PUT,
+            "https://appservice.example/_matrix/app/v1/transactions/1"
+                .parse()
+                .unwrap(),
+        );
+
+        authorize_request(&mut request, "hs-secret").unwrap();
+
+        let authorization = request
+            .headers()
+            .get(reqwest::header::AUTHORIZATION)
+            .unwrap();
+        assert_eq!(authorization, "Bearer hs-secret");
+        assert!(authorization.is_sensitive());
+        assert_eq!(
+            request
+                .url()
+                .query_pairs()
+                .filter(|(key, _)| key == "access_token")
+                .map(|(_, value)| value.into_owned())
+                .collect::<Vec<_>>(),
+            vec!["hs-secret"]
+        );
+    }
+
+    #[test]
+    fn rejects_a_homeserver_token_that_cannot_be_a_header() {
+        let mut request = reqwest::Request::new(
+            reqwest::Method::GET,
+            "https://appservice.example/".parse().unwrap(),
+        );
+
+        assert!(authorize_request(&mut request, "bad\ntoken").is_err());
+        assert!(
+            request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .is_none()
+        );
+    }
 
     #[test]
     fn appservice_url_cas_validates_callback_urls_without_losing_path_prefixes() {
